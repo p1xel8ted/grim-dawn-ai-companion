@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { appDataDir } from './data-dir.js';
 import { ensureDir } from '@grimdawn/core/db/cache';
 import { findGameDir } from '@grimdawn/core/db/gamefiles';
-import { findSaveDir, saveDir as detectedSaveDir } from '@grimdawn/core/paths';
+import { saveDir as detectedSaveDir } from '@grimdawn/core/paths';
 import { settingsSchema, type ResolvedSettings, type Settings } from './settings-schema.js';
 
 export { settingsSchema } from './settings-schema.js';
@@ -56,7 +56,7 @@ export function saveSettings(settings: Settings): void {
 export function resolveSettings(settings: Settings = loadSettings()): ResolvedSettings {
   return {
     ...settings,
-    saveDir: settings.saveDir ?? findSaveDir() ?? detectedSaveDir(),
+    saveDir: settings.saveDir ?? detectedSaveDir(),
     gameDir: settings.gameDir ?? findGameDir(),
   };
 }
