@@ -32,6 +32,7 @@ import {
   gameDb,
   haveGameInstall,
   haveSaves,
+  primaryCharacter,
   snapshotCharacterSave,
   snapshotSharedSave,
 } from './paths.js';
@@ -600,7 +601,7 @@ const liveSkipReason = !haveGameInstall() ? MISSING_GAME_MESSAGE : MISSING_SAVES
 describe.skipIf(!canRunLive)(`projection vs an independent mutation (${canRunLive ? 'live' : liveSkipReason})`, () => {
   it('agrees with a hand-mutated save on resistances, speeds, damage and payload', { timeout: 180_000 }, async () => {
     const db = await gameDb();
-    const liveSave = parseGdc(readFileSync(snapshotCharacterSave('_Suchka')));
+    const liveSave = parseGdc(readFileSync(snapshotCharacterSave(primaryCharacter())));
     const account: AccountFiles = {
       stash: parseTransferStash(readFileSync(snapshotSharedSave(TRANSFER_STASH_PATH))),
       formulas: parseFormulasFile(readFileSync(snapshotSharedSave(FORMULAS_PATH))),

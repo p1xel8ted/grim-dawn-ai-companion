@@ -97,6 +97,25 @@ function fixtureRoster(): string[] {
 export const CHARACTERS: readonly string[] = fixtureRoster();
 
 /**
+ * Is a *named* character on this machine?
+ *
+ * For the tests that are genuinely about one character — every assertion in
+ * them is that character's gear, masteries and damage profile, so pointing
+ * them at whoever happens to be installed trades one failure for a page of
+ * them. They gate on this and say whose save they wanted, which is the honest
+ * version of what they did before: fail with an ENOENT on a machine that was
+ * never going to have it.
+ */
+export function haveCharacter(name: string): boolean {
+  return CHARACTERS.includes(name);
+}
+
+/** What to call a suite that needs one particular character. */
+export function missingCharacterMessage(name: string): string {
+  return `${name} is not on this machine — these assertions are about that character's own gear and build`;
+}
+
+/**
  * A character's save **as the tests see it** — the snapshot, taken from the live
  * tree on first use. Use `liveCharacterSavePath` for the handful of cases that
  * genuinely mean the file the game is writing.

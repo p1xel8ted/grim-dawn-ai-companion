@@ -27,6 +27,8 @@ import {
   haveSaves,
   haveTransferStash,
   characterWith,
+  haveCharacter,
+  missingCharacterMessage,
   snapshotCharacterSave,
   snapshotSharedSave,
 } from './paths.js';
@@ -451,6 +453,9 @@ describe('itemBaseId', () => {
 // ---------------------------------------------------------------------------
 
 const canRunLive = haveSaves() && haveGameInstall() && haveTransferStash() && haveFormulas() && haveReagents();
+/** The character these live assertions are actually about, gear and all. */
+const FIXTURE = '_Suchka';
+const canRunFixture = canRunLive && haveCharacter(FIXTURE);
 const skipReason = !haveSaves()
   ? MISSING_SAVES_MESSAGE
   : !haveGameInstall()
@@ -553,7 +558,52 @@ describe('devotionBindings', () => {
   });
 });
 
-describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReason})`, () => {
+// Any character who has bound a power will do, so this is gated on the live
+// tree rather than on {FIXTURE}: the pairing it checks is whatever that
+// machine's save actually holds.
+describe.skipIf(!canRunLive)(`devotion bindings (${canRunLive ? 'live' : skipReason})`, () => {
+it('names the skill each bound celestial power fires from', async ({ skip }) => {
+  // Whichever character on this machine has actually bound a power; a roster
+  // where nobody has is not a failure, it is nothing to assert about.
+  const character = characterWith((save) => save.skills.some((s) => s.autoCastSkill !== ''));
+  if (!character) skip();
+  const input = await context(character!);
+  const doc = buildContextDoc(input);
+  const powers = doc.markdown.split(/\r?\n/).filter((l) => l.includes('celestial power:'));
+
+  // The binding is stored on the host skill and names the devotion. Read it
+  // off the devotion instead and every one of these lines says "unbound" —
+  // so each pairing is checked, not just that some host reached the line.
+  let checked = 0;
+  for (const binding of input.save.skills.filter((s) => s.autoCastSkill)) {
+    const power = input.db.getSkill(binding.autoCastSkill);
+    if (!power) continue;
+    const powerName = skillLabel(power, input.db);
+    const line = powers.find((l) => l.includes(`celestial power: ${powerName} —`));
+    expect(line, `${powerName}: ${powers.join(' / ')}`).toBeDefined();
+
+    // Resolved the other way up from the builder's own chain: the text
+    // archive first, the indexed record's label second.
+    const host = input.db.getSkill(binding.record);
+    const hostName = input.db.skillName(binding.record) ?? (host ? skillLabel(host, input.db) : undefined);
+    expect(hostName, binding.record).toBeDefined();
+    expect(hostName).not.toBe(binding.record);
+    expect(line!).toContain(` — bound to ${hostName!}`);
+    expect(line!).not.toContain('unbound');
+
+    // The controller's chance reaches the line as a parsed phrase.
+    if (/cast_@?\w+?_\d+%\.dbr$/.test(binding.autoCastController)) {
+      expect(line!).toMatch(/\(on (an enemy|your) [a-z ]+, \d+% chance\)$/);
+    }
+    checked++;
+  }
+  expect(checked).toBeGreaterThan(0);
+});
+});
+
+describe.skipIf(!canRunFixture)(
+  `context document (${canRunFixture ? 'live' : canRunLive ? missingCharacterMessage(FIXTURE) : skipReason})`,
+  () => {
   it('emits all twelve sections inside the default budget, untrimmed', async () => {
     const doc = buildContextDoc(await context('_Suchka'));
     // Twelve since Stage 6B: §12 is the unlock ladder, which sits after the
@@ -1202,44 +1252,6 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
       if (!doc.markdown.includes(item.name)) continue;
       expect(doc.markdown, `${item.name} #${id}`).toContain(`\`#${id}\``);
     }
-  });
-
-  it('names the skill each bound celestial power fires from', async ({ skip }) => {
-    // Whichever character on this machine has actually bound a power; a roster
-    // where nobody has is not a failure, it is nothing to assert about.
-    const character = characterWith((save) => save.skills.some((s) => s.autoCastSkill !== ''));
-    if (!character) skip();
-    const input = await context(character!);
-    const doc = buildContextDoc(input);
-    const powers = doc.markdown.split(/\r?\n/).filter((l) => l.includes('celestial power:'));
-
-    // The binding is stored on the host skill and names the devotion. Read it
-    // off the devotion instead and every one of these lines says "unbound" —
-    // so each pairing is checked, not just that some host reached the line.
-    let checked = 0;
-    for (const binding of input.save.skills.filter((s) => s.autoCastSkill)) {
-      const power = input.db.getSkill(binding.autoCastSkill);
-      if (!power) continue;
-      const powerName = skillLabel(power, input.db);
-      const line = powers.find((l) => l.includes(`celestial power: ${powerName} —`));
-      expect(line, `${powerName}: ${powers.join(' / ')}`).toBeDefined();
-
-      // Resolved the other way up from the builder's own chain: the text
-      // archive first, the indexed record's label second.
-      const host = input.db.getSkill(binding.record);
-      const hostName = input.db.skillName(binding.record) ?? (host ? skillLabel(host, input.db) : undefined);
-      expect(hostName, binding.record).toBeDefined();
-      expect(hostName).not.toBe(binding.record);
-      expect(line!).toContain(` — bound to ${hostName!}`);
-      expect(line!).not.toContain('unbound');
-
-      // The controller's chance reaches the line as a parsed phrase.
-      if (/cast_@?\w+?_\d+%\.dbr$/.test(binding.autoCastController)) {
-        expect(line!).toMatch(/\(on (an enemy|your) [a-z ]+, \d+% chance\)$/);
-      }
-      checked++;
-    }
-    expect(checked).toBeGreaterThan(0);
   });
 
   it('groups the unlock ladder by shared threshold and costs it in points', async () => {

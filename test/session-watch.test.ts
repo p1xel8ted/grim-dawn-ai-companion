@@ -14,19 +14,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { MISSING_SAVES_MESSAGE, haveSaves, snapshotCharacterSave } from './paths.js';
+import { MISSING_SAVES_MESSAGE, haveSaves, primaryCharacter, snapshotCharacterSave } from './paths.js';
 
 const temps: string[] = [];
 function tempSaveDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'gd-watch-'));
   temps.push(dir);
-  mkdirSync(join(dir, 'main', '_Suchka'), { recursive: true });
+  mkdirSync(join(dir, 'main', SUBJECT), { recursive: true });
   return dir;
 }
 
 afterEach(() => {
   for (const dir of temps.splice(0, temps.length)) rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * The character the synthetic save trees are built around. Only the name and
+ * the bytes matter here — the watcher is being tested, not the build — so this
+ * is whoever the machine has rather than whoever wrote the test.
+ */
+const SUBJECT = haveSaves() ? primaryCharacter() : '_none';
 
 describe.runIf(haveSaves())('the session state, watching', () => {
   it('follows the save directory when it moves', async () => {
@@ -38,9 +45,9 @@ describe.runIf(haveSaves())('the session state, watching', () => {
 
     const first = tempSaveDir();
     const second = tempSaveDir();
-    const good = readFileSync(snapshotCharacterSave('_Suchka'));
-    writeFileSync(join(first, 'main', '_Suchka', 'player.gdc'), good);
-    writeFileSync(join(second, 'main', '_Suchka', 'player.gdc'), good);
+    const good = readFileSync(snapshotCharacterSave(SUBJECT));
+    writeFileSync(join(first, 'main', SUBJECT, 'player.gdc'), good);
+    writeFileSync(join(second, 'main', SUBJECT, 'player.gdc'), good);
 
     const pushes: string[] = [];
     const state = new SessionState((event) => pushes.push(event.type));
@@ -50,7 +57,7 @@ describe.runIf(haveSaves())('the session state, watching', () => {
       state.startWatching();
 
       // Touching a save under the watched tree invalidates the snapshot.
-      writeFileSync(join(first, 'main', '_Suchka', 'player.gdc'), good);
+      writeFileSync(join(first, 'main', SUBJECT, 'player.gdc'), good);
       expect(await settles(pushes, 'snapshot-invalidated')).toBe(true);
 
       // Moving the setting moves the watch — and, crucially, *stops* the old one.
@@ -58,11 +65,11 @@ describe.runIf(haveSaves())('the session state, watching', () => {
       // over a directory nothing reads any more.
       await state.updateSettings({ saveDir: second });
       pushes.length = 0;
-      writeFileSync(join(second, 'main', '_Suchka', 'player.gdc'), good);
+      writeFileSync(join(second, 'main', SUBJECT, 'player.gdc'), good);
       expect(await settles(pushes, 'snapshot-invalidated')).toBe(true);
 
       pushes.length = 0;
-      writeFileSync(join(first, 'main', '_Suchka', 'player.gdc'), good);
+      writeFileSync(join(first, 'main', SUBJECT, 'player.gdc'), good);
       await new Promise((r) => setTimeout(r, 3500));
       expect(pushes).toEqual([]);
     } finally {
