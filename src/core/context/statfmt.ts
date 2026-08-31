@@ -319,7 +319,7 @@ const AUTOCAST_TRIGGERS: readonly [RegExp, string][] = [
   [/ondeath/, 'death'],
 ];
 
-function autoCastTrigger(record: string): string | undefined {
+export function autoCastTrigger(record: string): string | undefined {
   const stem = record.split('/').pop()?.replace(/\.dbr$/, '') ?? '';
   const match = /^cast_@?(\w+?)_?(\d+%)?$/.exec(stem);
   if (!match) return undefined;

@@ -54,7 +54,7 @@ import {
   type CandidateSelection,
   type EquipGroup,
 } from './filters.js';
-import { describeSlots, formatStats, num, signed } from './statfmt.js';
+import { autoCastTrigger, describeSlots, formatStats, num, signed } from './statfmt.js';
 
 export interface ContextInput {
   save: CharacterSave;
@@ -1023,8 +1023,37 @@ function skillStatLine(skill: DbSkill, rank: number, ctx: RenderContext): string
   return `${lines.slice(0, SKILL_STAT_LINES).join('; ')}; … (${lines.length - SKILL_STAT_LINES} more)`;
 }
 
+/**
+ * Which skill each celestial power is bound to, keyed by the power's record.
+ *
+ * The binding lives on the *host* player skill and names the devotion, never
+ * the other way round: on a live save every devotion entry's own
+ * `autoCastSkill` is empty, so reading it there reported every bound power as
+ * unbound. `autoCastController` is the record that fires it, which is where the
+ * trigger and its chance come from.
+ */
+export function devotionBindings(save: CharacterSave, db: GameDb): Map<string, string> {
+  const bindings = new Map<string, string>();
+  for (const entry of save.skills) {
+    if (!entry.autoCastSkill) continue;
+    // A summoning skill is a legal host and is not in the skill index (pet
+    // subtrees are out of scope), but the text archive still names it, so the
+    // lookup falls through to that before it gives up. `skillLabel` ends at the
+    // raw path, so a label that *is* the path is a miss, not a name: a DBR path
+    // must never reach the reader.
+    const host = db.getSkill(entry.record);
+    const label = host ? skillLabel(host, db) : db.skillName(entry.record);
+    const named = label !== undefined && label.toLowerCase() !== entry.record.toLowerCase();
+    const name = named ? label : 'an unnamed skill';
+    const trigger = entry.autoCastController ? autoCastTrigger(entry.autoCastController) : undefined;
+    bindings.set(entry.autoCastSkill.toLowerCase(), trigger ? `${name} (${trigger})` : name);
+  }
+  return bindings;
+}
+
 function devotionSection(out: Writer, ctx: RenderContext): void {
   const { save, db } = ctx;
+  const bindings = devotionBindings(save, db);
   const constellations = new Map<string, { stars: number; stats: Record<string, StatValue>[]; powers: string[] }>();
 
   for (const entry of save.devotions) {
@@ -1039,7 +1068,7 @@ function devotionSection(out: Writer, ctx: RenderContext): void {
     // passive star whose numbers are already in the matrix above.
     if (stats.class.startsWith('Skill_Passive') || stats.class === 'SkillBuff_Passive') group.stats.push(stats.stats);
     else {
-      const bound = entry.autoCastSkill ? db.skillName(entry.autoCastSkill) : undefined;
+      const bound = bindings.get(entry.record.toLowerCase());
       group.powers.push(`${skillLabel(skill, db)}${bound ? ` — bound to ${bound}` : ' — unbound'}`);
     }
     constellations.set(name, group);

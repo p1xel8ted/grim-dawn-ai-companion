@@ -1,18 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-import { buildContextDoc, DEFAULT_MAX_TOKENS, type ContextInput } from '../src/core/context/builder.js';
+import { buildContextDoc, DEFAULT_MAX_TOKENS, devotionBindings, type ContextInput } from '../src/core/context/builder.js';
 import { damageIdentity, equipGroup, estimateTokens, selectCandidates } from '../src/core/context/filters.js';
 import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
-import type { DbItem, GameDb } from '@grimdawn/core/db/types';
+import type { DbItem, DbSkill, GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
 import { ambiguousStats } from '../src/core/ai/verify.js';
+import { skillLabel } from '../src/core/mechanics/skills.js';
 import { itemBaseId, itemId, resolveCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
 import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
 import { parseGdc } from '@grimdawn/core/save/gdc';
 import { parseFormulasFile, parseReagents, parseTransferStash } from '@grimdawn/core/save/gst';
-import { parseDifficulty, type ItemInstance } from '@grimdawn/core/save/types';
+import { parseDifficulty, type CharacterSave, type ItemInstance } from '@grimdawn/core/save/types';
 import {
   FORMULAS_PATH,
   MISSING_GAME_MESSAGE,
@@ -25,6 +26,7 @@ import {
   haveReagents,
   haveSaves,
   haveTransferStash,
+  characterWith,
   snapshotCharacterSave,
   snapshotSharedSave,
 } from './paths.js';
@@ -496,6 +498,60 @@ function tableRow(markdown: string, label: string): number[] | undefined {
     .slice(2, -1)
     .map((cell) => (cell.trim() === '·' ? 0 : Number(cell.trim())));
 }
+
+describe('devotionBindings', () => {
+  const devotion = 'records/skills/devotion/tier1_01e_skill.dbr';
+
+  function save(skills: unknown[], devotions: unknown[] = []): CharacterSave {
+    return { skills, devotions } as unknown as CharacterSave;
+  }
+
+  function entry(record: string, autoCastSkill = '', autoCastController = ''): unknown {
+    return { record, level: 1, autoCastSkill, autoCastController };
+  }
+
+  it('reads the binding off the host skill, which is the only place it is stored', () => {
+    const db = stubDb({ 'records/skills/playerclass06/savagery1.dbr': 'Savagery' });
+    const bindings = devotionBindings(
+      save([entry('records/skills/playerclass06/savagery1.dbr', devotion, 'records/controllers/itemskills/cast_@enemyonattack_20%.dbr')]),
+      db,
+    );
+    expect(bindings.get(devotion)).toBe('Savagery (on an enemy attack, 20% chance)');
+  });
+
+  // The direction is the whole bug: a devotion entry's own autoCastSkill is
+  // empty on every live save, so a reader that trusts it calls every bound
+  // power unbound.
+  it('does not read the binding off the devotion entry', () => {
+    const bindings = devotionBindings(save([], [entry(devotion, 'records/skills/playerclass06/savagery1.dbr')]), stubDb());
+    expect(bindings.size).toBe(0);
+  });
+
+  it('names a host the skill index does not carry, and never renders its record', () => {
+    const totem = 'records/skills/playerclass06/totem1.dbr';
+    // Pet subtrees are out of the index, so getSkill misses a summon; the text
+    // archive still names it.
+    const bindings = devotionBindings(save([entry(totem, devotion)]), stubDb({ [totem]: 'Wendigo Totem' }));
+    expect(bindings.get(devotion)).toBe('Wendigo Totem');
+    expect(bindings.get(devotion)).not.toContain('records/');
+  });
+
+  // F3: `skillLabel` is total and ends at the raw path, so an indexed host with
+  // no display tag anywhere returns its own record. The `??` chain never sees
+  // it, which is why this needs its own case rather than the missing-host one.
+  it('rejects a label that is only the record, for a host in the index with no name', () => {
+    const totem = 'records/skills/playerclass06/totem1.dbr';
+    const nameless = { ...stubDb(), getSkill: () => ({ record: totem, class: 'Skill_Attack', stats: {} }) as DbSkill };
+    const bindings = devotionBindings(save([entry(totem, devotion)]), nameless);
+    expect(bindings.get(devotion)).toBe('an unnamed skill');
+    expect(bindings.get(devotion)).not.toContain('records/');
+  });
+
+  it('falls back to a phrase rather than a record path when nothing names the host', () => {
+    const bindings = devotionBindings(save([entry('records/skills/playerclass06/totem1.dbr', devotion)]), stubDb());
+    expect(bindings.get(devotion)).toBe('an unnamed skill');
+  });
+});
 
 describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReason})`, () => {
   it('emits all twelve sections inside the default budget, untrimmed', async () => {
@@ -1146,6 +1202,44 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
       if (!doc.markdown.includes(item.name)) continue;
       expect(doc.markdown, `${item.name} #${id}`).toContain(`\`#${id}\``);
     }
+  });
+
+  it('names the skill each bound celestial power fires from', async ({ skip }) => {
+    // Whichever character on this machine has actually bound a power; a roster
+    // where nobody has is not a failure, it is nothing to assert about.
+    const character = characterWith((save) => save.skills.some((s) => s.autoCastSkill !== ''));
+    if (!character) skip();
+    const input = await context(character!);
+    const doc = buildContextDoc(input);
+    const powers = doc.markdown.split(/\r?\n/).filter((l) => l.includes('celestial power:'));
+
+    // The binding is stored on the host skill and names the devotion. Read it
+    // off the devotion instead and every one of these lines says "unbound" —
+    // so each pairing is checked, not just that some host reached the line.
+    let checked = 0;
+    for (const binding of input.save.skills.filter((s) => s.autoCastSkill)) {
+      const power = input.db.getSkill(binding.autoCastSkill);
+      if (!power) continue;
+      const powerName = skillLabel(power, input.db);
+      const line = powers.find((l) => l.includes(`celestial power: ${powerName} —`));
+      expect(line, `${powerName}: ${powers.join(' / ')}`).toBeDefined();
+
+      // Resolved the other way up from the builder's own chain: the text
+      // archive first, the indexed record's label second.
+      const host = input.db.getSkill(binding.record);
+      const hostName = input.db.skillName(binding.record) ?? (host ? skillLabel(host, input.db) : undefined);
+      expect(hostName, binding.record).toBeDefined();
+      expect(hostName).not.toBe(binding.record);
+      expect(line!).toContain(` — bound to ${hostName!}`);
+      expect(line!).not.toContain('unbound');
+
+      // The controller's chance reaches the line as a parsed phrase.
+      if (/cast_@?\w+?_\d+%\.dbr$/.test(binding.autoCastController)) {
+        expect(line!).toMatch(/\(on (an enemy|your) [a-z ]+, \d+% chance\)$/);
+      }
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 
   it('groups the unlock ladder by shared threshold and costs it in points', async () => {
