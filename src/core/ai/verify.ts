@@ -406,14 +406,18 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
 
   // Extraction destroys the host. A destroyed item cannot also be kept, held,
   // sold or re-equipped — the plan has to spend it exactly once.
-  const hosts = new Map<string, string>();
+  const hosts = new Map<string, { source: string; owner: AdvisorPlan['verdicts'][number] }>();
   for (const v of plan.verdicts) {
-    if (v.componentFrom) hosts.set(v.componentFrom, `${v.verdict} on ${v.slot}`);
+    if (v.componentFrom) hosts.set(v.componentFrom, { source: `${v.verdict} on ${v.slot}`, owner: v });
   }
-  for (const [host, source] of hosts) {
+  for (const [host, { source, owner }] of hosts) {
     const name = input.itemsById.get(host)?.display ?? `#${host}`;
     for (const v of plan.verdicts) {
-      if (v.itemId === host) {
+      // The verdict doing the extracting names the outgoing item as its own
+      // `itemId`, so an EQUIP salvaging the piece it replaces is the move
+      // itself. Any other verdict naming it is still spending it twice.
+      const ownsExtraction = v === owner && v.verdict === 'EQUIP';
+      if (v.itemId === host && !ownsExtraction) {
         warn(
           'destroyed-host',
           `${name} is destroyed by the extraction in ${source}, but also carries a ${v.verdict} verdict on ${v.slot}`,

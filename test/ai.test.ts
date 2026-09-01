@@ -1216,6 +1216,57 @@ describe('checkPlan', () => {
     expect(destroyed.map((d) => d.message).join(' ')).toContain('Spare Band');
   });
 
+  // The outgoing item is the verdict's own `itemId`, so an EQUIP that salvages
+  // the piece it is taking off names the same id twice. That is the move, not a
+  // contradiction.
+  it('lets an EQUIP extract from the item it is replacing', () => {
+    const w = world();
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', componentFrom: 'ring01', reason: 'r' },
+        ],
+        hold: [],
+        sell: [],
+      },
+      w,
+    );
+    expect(warnings.filter((x) => x.kind === 'destroyed-host')).toEqual([]);
+  });
+
+  // The exception covers the item the verdict is taking off, never the item it
+  // puts on. Equipping the thing you just salvaged is still a contradiction.
+  it('still catches an extracting EQUIP that equips the host it destroyed', () => {
+    const w = world();
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring01', componentFrom: 'ring01', reason: 'r' },
+        ],
+        hold: [],
+        sell: [],
+      },
+      w,
+    );
+    expect(warnings.filter((x) => x.kind === 'destroyed-host')).toHaveLength(1);
+  });
+
+  it('still catches a second verdict spending the same destroyed host', () => {
+    const w = world();
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', componentFrom: 'ring01', reason: 'r' },
+          { slot: 'Ring 2', itemId: 'ring01', verdict: 'EQUIP', target: 'bag01', reason: 'r' },
+        ],
+        hold: [],
+        sell: [],
+      },
+      w,
+    );
+    expect(warnings.filter((x) => x.kind === 'destroyed-host')).toHaveLength(1);
+  });
+
   it('flags an EQUIP with nothing to equip', () => {
     const warnings = checkPlan(
       { verdicts: [{ slot: 'Head', itemId: 'head01', verdict: 'EQUIP', reason: 'r' }], hold: [], sell: [] },
