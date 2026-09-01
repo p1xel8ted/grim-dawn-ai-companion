@@ -12,7 +12,7 @@ A desktop companion for Grim Dawn, developed on macOS (the game runs under Cross
 
 `npm install` here fails without the sibling checkouts. The split exists because an advisor that writes to your save is two tools in a trench coat: this one can be pointed at a character and left running while you play, and the thing that edits saves should be the thing you open deliberately, with the game closed.
 
-The two apps **share the database cache** (`~/Library/Application Support/grimdawn-core/cache`, keyed by an archive fingerprint) and nothing else. Settings, window geometry and stored advice runs stay in this app's own `appDataDir()` (`src/core/data-dir.ts`).
+The two apps **share the database cache** (`~/Library/Application Support/grimdawn-core/cache` on macOS, `%APPDATA%\grimdawn-core\cache` on Windows; keyed by an archive fingerprint) and nothing else. Settings, window geometry and stored advice runs stay in this app's own `appDataDir()` (`src/core/data-dir.ts`: Application Support on macOS, `%APPDATA%\gd-ai-companion` on Windows). The native Windows switch deliberately does not migrate the old macOS-shaped directories: app files remain there for manual recovery, while the derived shared cache rebuilds once.
 
 ## How work is organized
 
@@ -75,7 +75,7 @@ Implementation runs in ordered stages, one focused session each. **Start every i
   - Characters: `main/_Suchka/player.gdc` (primary test fixture), `main/_abcdef/player.gdc`, `main/_Bitch/player.gdc`
   - Custom Game: `user/_Suchka/player.gdc` (Path of Grim Dawn; same name as a campaign character on purpose — the collision is the case the tree parameter exists for)
   - Shared: `transfer.gst` (transfer stash), `formulas.gst` (learned blueprints)
-- Tool's own data: `~/Library/Application Support/gd-ai-companion/` (settings.json, `cache/<gameVersion>/`).
+- Tool's own data: `~/Library/Application Support/gd-ai-companion/` on macOS or `%APPDATA%\gd-ai-companion` on Windows (settings, window geometry, stored advice). The shared derived cache is the sibling `grimdawn-core` directory described above.
 - Don't touch `~/Documents` — it's TCC-protected for the shell and not needed (saves are in userdata).
 - **`ELECTRON_RUN_AS_NODE=1` is exported in the Claude Code shell**, which turns the Electron binary into plain Node: `require('electron').protocol` is `undefined` and the main process dies on line one with `Cannot read properties of undefined`. Prefix any Electron launch — `npm run dev`, or Playwright's `_electron.launch` — with `env -u ELECTRON_RUN_AS_NODE`. The app itself is fine; the environment is lying to it.
 

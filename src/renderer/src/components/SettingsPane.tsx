@@ -205,7 +205,7 @@ export function SettingsPane({
           <dd>{snapshot?.gameVersion ?? '—'}</dd>
           <dt>Settings file</dt>
           <dd>
-            <code>~/Library/Application Support/gd-ai-companion/settings.json</code>
+            <code>{bootstrap?.settingsPath ?? 'settings.json'}</code>
           </dd>
         </dl>
       </section>

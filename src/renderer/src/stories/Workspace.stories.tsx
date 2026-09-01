@@ -48,6 +48,7 @@ const STORED_RUNS: readonly AdviceRunRef[] = [
 
 const bootstrap: Bootstrap = {
   settings: { locale: 'en', provider: 'claude-cli', difficultyOverride: 'Ultimate' },
+  settingsPath: '/fixture/app-data/gd-ai-companion/settings.json',
   characters: ['_Fixture', '_Other'],
   active: '_Fixture',
   saveDir: '/fixture/save',

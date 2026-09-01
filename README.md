@@ -40,7 +40,10 @@ one. Cloud-off Steam uses the GOG location too.
 
 If yours is somewhere nobody could guess, **Settings** takes a typed path for
 either — or set `GD_GAME_DIR` / `GD_SAVE_DIR`, or pin `gameDir` / `saveDir` in
-`~/Library/Application Support/gd-ai-companion/settings.json`.
+the settings file. It lives at
+`~/Library/Application Support/gd-ai-companion/settings.json` on macOS and
+`%APPDATA%\gd-ai-companion\settings.json` on Windows; the Settings pane shows
+the exact resolved path.
 
 ## Building a release
 
@@ -75,8 +78,12 @@ at all, so it works offline and always describes the build you actually have:
 
 The base game and each expansion contribute their own archives, merged in load
 order so an expansion's changes win. Everything derived is cached under
-`~/Library/Application Support/gd-ai-companion/cache/<build>/`, keyed by a
-fingerprint of the archives, so a game patch re-derives it exactly once.
+`~/Library/Application Support/grimdawn-core/cache/<build>/` on macOS and
+`%APPDATA%\grimdawn-core\cache\<build>` on Windows, keyed by a fingerprint of
+the archives. Companion and Patcher share it, so a game patch re-derives it
+exactly once between them. Upgrading from the old macOS-shaped Windows path
+causes one cold rebuild; no cache migration is attempted because every byte is
+derived from the installed game.
 
 Set `locale` in `settings.json` to any language the install ships —
 `npm run cli -- db --stats` lists them.

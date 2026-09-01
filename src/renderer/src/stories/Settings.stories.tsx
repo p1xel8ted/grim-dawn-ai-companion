@@ -22,6 +22,7 @@ import { fixtureIconUrl } from './fixtureIcons.js';
 
 const BOOTSTRAP: Bootstrap = {
   settings: { locale: 'en', provider: 'claude-cli', model: 'opus', effort: 'high', difficultyOverride: 'Ultimate' },
+  settingsPath: '/fixture/app-data/gd-ai-companion/settings.json',
   characters: ['_Fixture', '_Other'],
   active: '_Fixture',
   saveDir: '/fixture/Steam/userdata/1234/219990/remote/save',

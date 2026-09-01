@@ -67,6 +67,8 @@ export function gdiconUrl(texPath: string): string {
 
 export interface Bootstrap {
   settings: Settings;
+  /** Exact settings file used by both the CLI and window, resolved in main. */
+  settingsPath: string;
   /** Character directory names under `<saveDir>/main`. */
   characters: string[];
   active?: string;

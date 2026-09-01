@@ -17,7 +17,7 @@ import { createIconService, type IconService } from '@grimdawn/core/icons';
 import { adviceScope, loadSnapshot, SessionError, type CharacterSnapshot } from '../core/session.js';
 import type { CharacterSave } from '@grimdawn/core/save/types';
 import { findSaveDirs, listCharacters } from '@grimdawn/core/paths';
-import { loadSettings, resolveSettings, saveSettings } from '../core/settings.js';
+import { loadSettings, resolveSettings, saveSettings, settingsPath } from '../core/settings.js';
 import type { ResolvedSettings, Settings } from '../core/settings-schema.js';
 import { buildUiSnapshot } from '../core/view.js';
 import { createSaveWatcher, type SaveWatcher } from '@grimdawn/core/watcher';
@@ -113,6 +113,7 @@ export class SessionState {
     const active = this.character ?? this.settings.activeCharacter ?? characters[0];
     const boot: Bootstrap = {
       settings: this.settings,
+      settingsPath: settingsPath(),
       characters,
       saveDir: this.resolved.saveDir,
       // Whatever `Text_<LOCALE>.arc` files this install actually ships — a

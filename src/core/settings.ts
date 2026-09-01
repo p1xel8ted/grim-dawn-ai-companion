@@ -1,5 +1,6 @@
 /**
- * Persistent settings: `~/Library/Application Support/gd-ai-companion/settings.json`.
+ * Persistent settings below `appDataDir()` (Application Support on macOS,
+ * `%APPDATA%` on Windows).
  *
  * Every field has a working default, and the two path fields auto-detect, so the
  * file is optional — the tool runs correctly on this machine before it has ever
