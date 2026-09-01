@@ -12,6 +12,7 @@
         "dist": "npm run build && electron-builder --mac",
         "dist:win": "npm run build && electron-builder --win",
         "dist:all": "npm run build && electron-builder --mac --win",
+        "deploy:win": "node scripts/deploy-win.mjs",
         "start": "electron-vite preview",
         "test": "vitest run",
         "test:watch": "vitest",

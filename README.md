@@ -64,6 +64,20 @@ there should not be), so macOS wants a right-click → Open the first time and
 Windows will show a SmartScreen warning. Fine for a personal tool; a public
 release needs certificates, not a config change.
 
+On Windows, `npm run deploy:win` copies `release/win-unpacked/` over an existing
+install:
+
+```powershell
+$env:GD_DEPLOY_DIR = "G:\Applications\Grim Dawn AI Companion"
+npm run dist:win
+npm run deploy:win
+```
+
+The old install is renamed to `<name>.backup-<timestamp>` first and the three
+newest backups are kept, so rolling back is a rename and the folder does not
+grow by a third of a gigabyte per deploy. The target has no default: set
+`GD_DEPLOY_DIR` or pass the path as an argument.
+
 ## Where the data comes from
 
 **Your Grim Dawn install, and nothing else.** The tool makes no network requests
