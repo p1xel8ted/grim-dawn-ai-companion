@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { adviseEnvelopeSchema } from '../src/core/ai/envelope.js';
-import { projectPlan, projectVerdicts, type ProjectionInput } from '../src/core/ai/project.js';
+import { projectPlan, projectVerdicts, type PlanVerdict, type ProjectionInput } from '../src/core/ai/project.js';
 import { candidateProjections } from '../src/core/context/projections.js';
 import type { AugmentOption } from '../src/core/context/closable.js';
 import { selectCandidates, type CandidateContext } from '../src/core/context/filters.js';
@@ -290,6 +290,88 @@ const plan = (over: Partial<AdvisorPlan>): AdvisorPlan => ({
 
 const resist = (p: NonNullable<ReturnType<typeof projectPlan>>, label: string) =>
   p.resistances.find((r) => r.label === label)!;
+
+// A plan describes the loadout it wants, so the order its verdicts happen to be
+// written in must not decide which items survive. Two rings trading fingers is
+// the smallest case: each one's old slot is the other one's new slot.
+describe('projectVerdicts, two worn items trading places', () => {
+  const RING_A = 'records/items/ringa.dbr';
+  const RING_B = 'records/items/ringb.dbr';
+  const ringDb = stubDb({
+    items: {
+      [RING_A]: item(RING_A, { name: 'Ring A', slot: 'ArmorJewelry_Ring', stats: { defensiveFire: 10 } }),
+      [RING_B]: item(RING_B, { name: 'Ring B', slot: 'ArmorJewelry_Ring', stats: { defensiveCold: 20 } }),
+    },
+  });
+
+  /** Ring 1 and Ring 2 worn, and the two verdicts that swap them. */
+  function swap(secondRing: string, secondSeed: number): ProjectionInput {
+    const theSave = save({
+      equipment: (() => {
+        const eq: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+        eq[6] = instance({ baseName: RING_A, seed: 1 });
+        eq[7] = instance({ baseName: secondRing, seed: secondSeed });
+        return eq;
+      })(),
+    });
+    const itemsById = new Map<string, ResolvedItem>([
+      ['ring-1', resolveItem(theSave.equipment[6]!, ringDb, 'equipped', 'Ring 1', undefined, { kind: 'equipment', slot: 6 })],
+      ['ring-2', resolveItem(theSave.equipment[7]!, ringDb, 'equipped', 'Ring 2', undefined, { kind: 'equipment', slot: 7 })],
+    ]);
+    return { save: theSave, account: {}, db: ringDb, difficulty: 'Ultimate', itemsById, socketablesById: new Map() };
+  }
+
+  const verdicts: PlanVerdict[] = [
+    { slot: 'Ring 1', itemId: 'ring-1', verdict: 'EQUIP', targetId: 'ring-2', reason: '' },
+    { slot: 'Ring 2', itemId: 'ring-2', verdict: 'EQUIP', targetId: 'ring-1', reason: '' },
+  ];
+
+  it('keeps both rings when they are different items', () => {
+    const result = projectVerdicts(verdicts, swap(RING_B, 2))!;
+    expect(result.after.resistances.effective.fire).toBe(10);
+    expect(result.after.resistances.effective.cold).toBe(20);
+    expect(result.projection.skipped).toEqual([]);
+  });
+
+  // Byte-identical rings share every instance field, so nothing about the item
+  // itself can tell the two fingers apart. Only where each one came from does.
+  it('keeps both rings when they are byte-identical', () => {
+    const result = projectVerdicts(verdicts, swap(RING_A, 1))!;
+    expect(result.after.resistances.effective.fire).toBe(20);
+    expect(result.projection.skipped).toEqual([]);
+  });
+
+  // Hands go through the two-hander checks on their way in, which rings do not,
+  // so the swap has to be pinned on a weapon slot as well as a jewellery one.
+  it('keeps both weapons when two one-handers trade hands', () => {
+    const SWORD_A = 'records/items/sworda.dbr';
+    const SWORD_B = 'records/items/swordb.dbr';
+    const swordDb = stubDb({
+      items: {
+        [SWORD_A]: item(SWORD_A, { name: 'Sword A', slot: 'WeaponMelee_Sword1h', stats: { defensiveFire: 10 } }),
+        [SWORD_B]: item(SWORD_B, { name: 'Sword B', slot: 'WeaponMelee_Sword1h', stats: { defensiveCold: 20 } }),
+      },
+    });
+    const theSave = save({
+      weaponSet1: [instance({ baseName: SWORD_A, seed: 1 }), instance({ baseName: SWORD_B, seed: 2 })],
+      alternateWeaponSetActive: false,
+    });
+    const itemsById = new Map<string, ResolvedItem>([
+      ['w-main', resolveItem(theSave.weaponSet1[0]!, swordDb, 'equipped', 'Main hand', undefined, { kind: 'weapon', set: 1, hand: 'main' })],
+      ['w-off', resolveItem(theSave.weaponSet1[1]!, swordDb, 'equipped', 'Off hand', undefined, { kind: 'weapon', set: 1, hand: 'off' })],
+    ]);
+    const result = projectVerdicts(
+      [
+        { slot: 'Main hand', itemId: 'w-main', verdict: 'EQUIP', targetId: 'w-off', reason: '' },
+        { slot: 'Off hand', itemId: 'w-off', verdict: 'EQUIP', targetId: 'w-main', reason: '' },
+      ],
+      { save: theSave, account: {}, db: swordDb, difficulty: 'Ultimate', itemsById, socketablesById: new Map() },
+    )!;
+    expect(result.after.resistances.effective.fire).toBe(10);
+    expect(result.after.resistances.effective.cold).toBe(20);
+    expect(result.projection.skipped).toEqual([]);
+  });
+});
 
 describe('projectPlan', () => {
   it('moves a resistance and a damage +% when an EQUIP replaces a worn item', () => {

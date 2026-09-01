@@ -51,6 +51,11 @@ export interface ProjectionInput {
 
 type SlotRef = { kind: 'equipment'; index: number } | { kind: 'weapon'; set: 1 | 2; hand: 0 | 1 };
 
+/** One slot, as a string that can go in a set. */
+function slotKey(ref: SlotRef): string {
+  return ref.kind === 'equipment' ? `e${ref.index}` : `w${ref.set}.${ref.hand}`;
+}
+
 /**
  * Aliases (`Main hand`, `weapon 1 off`) resolve through the shared matcher,
  * against the active set — which is why this needs `activeSet` and lives on the
@@ -177,6 +182,11 @@ export function projectVerdicts(
   const activeSet: 1 | 2 = save.alternateWeaponSetActive ? 2 : 1;
   let componentInstalls = 0;
 
+  // Slots an earlier verdict has already equipped. Tracked by position rather
+  // than by item, because two rings can be byte-identical and only where each
+  // one came from tells them apart.
+  const filled = new Set<string>();
+
   const install = (ref: SlotRef, slot: string, verdict: string, kind: 'component' | 'augment', id: string): void => {
     const socketable = socketablesById.get(id);
     if (!socketable) {
@@ -279,11 +289,18 @@ export function projectVerdicts(
         }
         // Wearing it in this slot must not leave a second copy where it came
         // from — a Ring 1 ↔ Ring 2 shuffle would otherwise count it twice.
-        if (target.position.kind === 'equipment') setSlotInstance(mutated, { kind: 'equipment', index: target.position.slot }, null);
-        else if (target.position.kind === 'weapon') {
-          setSlotInstance(mutated, { kind: 'weapon', set: target.position.set, hand: target.position.hand === 'main' ? 0 : 1 }, null);
-        }
+        // But in that shuffle the slot it came from is where the previous
+        // verdict just put *its* ring, so emptying it would throw that ring
+        // away and the plan would lose an item it never asked to remove.
+        const from: SlotRef | undefined =
+          target.position.kind === 'equipment'
+            ? { kind: 'equipment', index: target.position.slot }
+            : target.position.kind === 'weapon'
+              ? { kind: 'weapon', set: target.position.set, hand: target.position.hand === 'main' ? 0 : 1 }
+              : undefined;
+        if (from && !filled.has(slotKey(from))) setSlotInstance(mutated, from, null);
         setSlotInstance(mutated, ref, asEquipped(inst));
+        filled.add(slotKey(ref));
         break;
       }
       case 'ADD-COMPONENT':
