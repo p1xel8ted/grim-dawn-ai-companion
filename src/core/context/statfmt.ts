@@ -155,6 +155,17 @@ const PLUMBING = new Set([
   'reagentBaseBaseName',
   'reagentBaseQuantity',
   'forcedRandomArtifactName',
+  // The visual effect a skill bonus plays. The only field in the game data whose
+  // rendered value is a record path, which is never something to show a reader.
+  'skillBonusEffectName',
+  // How a summon gets placed and counted: Wind Devil and Wendigo Totem carry
+  // these, and `trackerOverride` is an untranslated tag name. The thing being
+  // summoned is out of scope, so none of it is a stat.
+  'petBurstSpawn',
+  'petPadding',
+  'trackSpawns',
+  'trackerOverride',
+  'isPetDisplayable',
   // Damage-over-time bookkeeping flags, not numbers the player sees.
   'offensiveSlowBleedingGlobal',
   'offensiveSlowBleedingXOR',

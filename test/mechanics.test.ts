@@ -21,6 +21,7 @@ import {
   classify,
   effectiveRanks,
   emptyBonuses,
+  modifierParent,
   rankValue,
   skillLabel,
 } from '../src/core/mechanics/skills.js';
@@ -64,6 +65,8 @@ interface World {
   skills?: Record<string, DbSkill>;
   sets?: Record<string, DbSet>;
   penalty?: Record<string, Record<string, number>>;
+  /** Names the text archive knows for records the skill index does not carry. */
+  names?: Record<string, string>;
 }
 
 function stubDb(world: World): GameDb {
@@ -75,7 +78,7 @@ function stubDb(world: World): GameDb {
     getAffix: (r) => world.affixes?.[r],
     getSkill: (r) => world.skills?.[r],
     getSet: (r) => world.sets?.[r],
-    skillName: (r) => world.skills?.[r]?.name,
+    skillName: (r) => world.skills?.[r]?.name ?? world.names?.[r],
     skillClass: () => undefined,
     masteryNumber: () => undefined,
     difficultyPenalty: (d) => world.penalty?.[d] ?? {},
@@ -278,6 +281,41 @@ describe('classify', () => {
     expect(classify(db.getSkill(AWAKENING)!, db)).toEqual({ band: 'maintainable' });
   });
 
+  it('finds a parent that carries no rank number at all, and only when a numbered one is absent — the bare stem', () => {
+    // Most base skills are `<stem>1`, but a few are just `<stem>`: Rune of
+    // Hagarrad is `icerune`, Panetti's is `arcanemissile`. Their modifiers had
+    // no parent, so they fell to `permanent` and their numbers were summed into
+    // the character's own totals instead of staying on the skill they modify.
+    const RUNE = 'records/skills/playerclass07/icerune.dbr';
+    const BITING_COLD = 'records/skills/playerclass07/icerune2_petmodifier.dbr';
+    const MISSILE = 'records/skills/playerclass05/arcanemissile.dbr';
+    const DISTORTION = 'records/skills/playerclass05/arcanemissile2.dbr';
+
+    const world = stubDb({
+      skills: {
+        [RUNE]: skill(RUNE, { class: 'Skill_TargetedSpawnPet', name: 'Rune of Hagarrad' }),
+        [BITING_COLD]: skill(BITING_COLD, { class: 'SkillSecondary_PetModifier' }),
+        [MISSILE]: skill(MISSILE, { class: 'Skill_AttackProjectile', name: "Panetti's Replicating Missile" }),
+        [DISTORTION]: skill(DISTORTION, { class: 'Skill_Modifier' }),
+      },
+    });
+    expect(modifierParent(BITING_COLD, world)?.record).toBe(RUNE);
+    expect(classify(world.getSkill(DISTORTION)!, world)).toEqual({ band: 'attack' });
+
+    // And the ordering that makes the bare candidate safe: it is tried after
+    // both numbered spellings, so a real `<stem>1` still wins. Without this the
+    // fallback could quietly re-parent skills that already resolved.
+    const numbered = 'records/skills/playerclass05/arcanemissile1.dbr';
+    const both = stubDb({
+      skills: {
+        [MISSILE]: skill(MISSILE, { class: 'Skill_AttackProjectile' }),
+        [numbered]: skill(numbered, { class: 'Skill_BuffSelfDuration', duration: 60, cooldown: 8 }),
+        [DISTORTION]: skill(DISTORTION, { class: 'Skill_Modifier' }),
+      },
+    });
+    expect(modifierParent(DISTORTION, both)?.record).toBe(numbered);
+  });
+
   it('excludes circuit breakers and procs', () => {
     const world = stubDb({
       skills: {
@@ -352,6 +390,34 @@ describe('effective skill ranks', () => {
       effective: 22,
       capped: true,
     });
+  });
+
+  it('still reports a mastery-tree skill the index has no entry for', () => {
+    // The index can miss a skill the character has points in - a template class
+    // the build rules skip, a mod's own tree. Dropping it silently is how a
+    // character with 8 points in Wendigo Totem got a dossier that listed none,
+    // beside a devotion bound to it. Better a row with no stats than no row.
+    const MISSING = 'records/skills/playerclass04/summon_bladespirit.dbr';
+    const world = stubDb({ names: { [MISSING]: 'Blade Spirit' } });
+    const ranks = effectiveRanks([characterSkill(MISSING, 6)], emptyBonuses(), world);
+    expect(ranks.get(MISSING)).toMatchObject({
+      name: 'Blade Spirit',
+      invested: 6,
+      bonus: 0,
+      effective: 6,
+      unindexed: true,
+    });
+  });
+
+  it('keeps ignoring the entries that are not skills a player spends points in', () => {
+    // Every save carries these: the default attack and move buttons, and one
+    // row per potion modifier the character has ever picked up.
+    const junk = [
+      'records/skills/default/defaultkickattack.dbr',
+      'records/skills/itemskillsgdx3/potionmodifiers/energypotion_healovertime.dbr',
+    ];
+    const ranks = effectiveRanks(junk.map((r) => characterSkill(r, 1)), emptyBonuses(), stubDb({}));
+    expect(ranks.size).toBe(0);
   });
 
   it('leaves the mastery bar alone — it is not a skill', () => {

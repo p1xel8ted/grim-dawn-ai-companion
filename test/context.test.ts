@@ -17,16 +17,17 @@ import { parseDifficulty, type CharacterSave, type ItemInstance } from '@grimdaw
 import {
   FORMULAS_PATH,
   MISSING_GAME_MESSAGE,
+  CHARACTERS,
   MISSING_SAVES_MESSAGE,
   REAGENTS_PATH,
   TRANSFER_STASH_PATH,
+  characterWith,
   gameDb,
   haveFormulas,
   haveGameInstall,
   haveReagents,
   haveSaves,
   haveTransferStash,
-  characterWith,
   haveCharacter,
   missingCharacterMessage,
   snapshotCharacterSave,
@@ -598,6 +599,94 @@ it('names the skill each bound celestial power fires from', async ({ skip }) => 
     checked++;
   }
   expect(checked).toBeGreaterThan(0);
+});
+});
+
+// Every character the machine has, because the shape that broke is a skill's,
+// not a character's: whichever save happens to be first proves nothing about
+// the rest of the roster.
+describe.skipIf(!canRunLive)(`the skill list (${canRunLive ? 'live' : skipReason})`, () => {
+it('names every skill every character has spent a point on', async () => {
+  // The bug this pins: Wind Devil and Wendigo Totem are spelled
+  // `Skill_TargetedSpawnPet`, the database skipped that class, and both
+  // vanished from the list without a word - on a character wearing devotions
+  // bound to them. A list that quietly drops rows reads as complete.
+  let checked = 0;
+  for (const character of CHARACTERS) {
+    const input = await context(character);
+    const doc = buildContextDoc(input);
+    const section = doc.markdown.slice(doc.markdown.indexOf('**Skills with points invested**'));
+    const list = section.slice(0, section.indexOf('**Devotion:**'));
+
+    for (const entry of input.save.skills) {
+      if (entry.level < 1) continue;
+      if (!/^records\/skills\/playerclass[^/]+\//.test(entry.record)) continue;
+      // The mastery bar is a row of its own above the list.
+      if (/\/_classtraining_/.test(entry.record)) continue;
+      const skill = input.db.getSkill(entry.record);
+      const name = skill ? skillLabel(skill, input.db) : input.db.skillName(entry.record);
+      expect(name, `${character}: ${entry.record}`).toBeTruthy();
+      expect(name, `${character}: ${entry.record}`).not.toBe(entry.record);
+      expect(list, `${character}: ${name} (${entry.record})`).toContain(`**${name}**`);
+      checked++;
+    }
+  }
+  expect(checked).toBeGreaterThan(0);
+});
+
+// Which pet modifiers a roster happens to have points in changes as the saves
+// get played - the machine that found this bug had one shape on Monday and the
+// other on Tuesday. So the shapes are put into a save rather than waited for.
+it('names a pet modifier that reaches its name through two pointers, and hangs it off its parent', async () => {
+  const WENDIGO_TOTEM = 'records/skills/playerclass06/totem1.dbr';
+  const RAGING_TEMPEST = 'records/skills/playerclass06/squall2.dbr';
+  const BLOOD_PACT = 'records/skills/playerclass06/totem2_petmodifier.dbr';
+
+  const db = await gameDb();
+  const save = parseGdc(readFileSync(snapshotCharacterSave(CHARACTERS[0]!)));
+  for (const record of [WENDIGO_TOTEM, RAGING_TEMPEST, BLOOD_PACT]) {
+    if (save.skills.some((s) => s.record === record)) continue;
+    save.skills.push({
+      record,
+      level: 1,
+      enabled: true,
+      unknown1: 0,
+      devotionLevel: 0,
+      devotionExperience: 0,
+      sublevel: 0,
+      active: false,
+      unknown2: 0,
+      autoCastSkill: '',
+      autoCastController: '',
+    });
+  }
+
+  const doc = buildContextDoc({
+    save,
+    aggregate: aggregateCharacter(save, db, save.difficulty),
+    resolved: resolveCharacter(save, {}, db),
+    db,
+  });
+  expect(doc.markdown).toContain('**Raging Tempest**');
+  expect(doc.markdown).not.toContain(BLOOD_PACT);
+
+  // A modifier is a child node, so naming it is only half the job: printed at
+  // the top level it reads as a skill of its own. `totem2_petmodifier` spells
+  // the parent convention with the kind of node written out, which the parser
+  // used to give up on.
+  expect(doc.markdown).toMatch(/^ {2}- modifier \*\*Blood Pact\*\* rank \d+/m);
+  expect(doc.markdown).not.toMatch(/^- \*\*Blood Pact\*\*/m);
+});
+
+it('leaves no record path anywhere in the document', async () => {
+  // Two of these leaked and neither was in the skill list: one in a projected
+  // rank delta under a candidate, one in a nested modifier row. A path is a
+  // path wherever it lands, so this reads the whole document.
+  for (const character of CHARACTERS) {
+    const doc = buildContextDoc(await context(character));
+    const paths = doc.markdown.match(/records\/[a-z0-9_/]+\.dbr/g) ?? [];
+    expect(paths, character).toEqual([]);
+  }
 });
 });
 

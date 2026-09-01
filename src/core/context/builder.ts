@@ -952,6 +952,13 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
 /** How many stat lines a skill row shows before it is cut off. */
 const SKILL_STAT_LINES = 6;
 
+/**
+ * Skill nodes that belong under the skill they modify rather than in the list
+ * on their own. A pet modifier is one of these - Raging Tempest hangs off Wind
+ * Devil exactly as Storm Touched hangs off Savagery.
+ */
+const MODIFIER_CLASSES = new Set(['Skill_Modifier', 'Skill_Transmuter', 'SkillSecondary_PetModifier']);
+
 function buildProfile(out: Writer, ctx: RenderContext, trim: Trim): void {
   const { save, aggregate, db } = ctx;
   out.h(2, '4. Skills, devotion and build profile');
@@ -963,9 +970,14 @@ function buildProfile(out: Writer, ctx: RenderContext, trim: Trim): void {
   const standalone: typeof aggregate.ranks = [];
   for (const rank of aggregate.ranks) {
     const skill = db.getSkill(rank.record);
-    if (!skill) continue;
+    if (!skill) {
+      // No entry in the database, but the character spent points here, so the
+      // row is still owed - `effectiveRanks` says why.
+      standalone.push(rank);
+      continue;
+    }
     const cls = statRecord(skill, db).class;
-    if (cls === 'Skill_Modifier' || cls === 'Skill_Transmuter') {
+    if (MODIFIER_CLASSES.has(cls)) {
       const parent = modifierParent(rank.record, db);
       if (parent && byRecord.has(parent.record)) {
         const kind = cls === 'Skill_Transmuter' ? 'transmuter' : 'modifier';
@@ -993,7 +1005,10 @@ function buildProfile(out: Writer, ctx: RenderContext, trim: Trim): void {
   for (const rank of standalone) {
     if (db.getSkill(rank.record)?.class === 'Skill_Mastery') continue;
     const skill = db.getSkill(rank.record);
-    if (!skill) continue;
+    if (!skill) {
+      out.line(`- **${rank.name}** ${rank.invested} invested — the tool has no data for this skill, so it is in none of the totals above and gear that adds ranks to it is not counted`);
+      continue;
+    }
     const stats = statRecord(skill, db);
     const ceiling = stats.ultimateLevel ?? stats.maxLevel ?? skill.ultimateLevel ?? skill.maxLevel;
     const rankText = `${rank.invested}${rank.bonus ? ` +${rank.bonus}` : ''} = ${rank.effective}${ceiling ? `/${ceiling}` : ''}${rank.capped ? ' (capped — more +skills here is wasted)' : ''}`;

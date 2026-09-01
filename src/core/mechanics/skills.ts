@@ -66,6 +66,8 @@ const DEBUFF = /Debuf|Contageous$/;
 const ATTACK = /^(Skill|SkillSecondary)_(Attack|WPAttack|WeaponPool|Kick|Move|Evade)/;
 const POTION = /Potion/;
 const PET = /Pet/;
+/** Where the skills a character spends points in live. */
+const MASTERY_TREE = /^records\/skills\/playerclass[^/]+\//;
 
 /** The value of a possibly-leveled stat at a given rank (1-based). */
 export function rankValue(value: StatValue, rank: number): number {
@@ -116,11 +118,17 @@ export function skillLabel(skill: DbSkill, db: GameDb): string {
  * `veilofshadows1`, which resolves the modifiers on the mastery trees. Where it
  * does not resolve, banding falls back to the sign rule, which never
  * misattributes a debuff as defence.
+ *
+ * A pet modifier spells the same convention with the kind of node written out:
+ * `totem2_petmodifier`, `mortartrap2_petmod`. And a handful of base skills carry
+ * no number at all, so `icerune2_petmodifier` hangs off plain `icerune` - tried
+ * last, after both numbered spellings, so it only ever answers where they are
+ * absent.
  */
 export function modifierParent(record: string, db: GameDb): DbSkill | undefined {
-  const match = /^(.*\/)([a-z_]+?)(\d+)[a-z]?\.dbr$/.exec(record);
+  const match = /^(.*\/)([a-z_]+?)(\d+)[a-z]?(?:_petmod(?:ifier)?)?\.dbr$/.exec(record);
   if (!match) return undefined;
-  for (const first of ['1', '01']) {
+  for (const first of ['1', '01', '']) {
     const candidate = `${match[1]}${match[2]}${first}.dbr`;
     if (candidate === record) continue;
     const parent = db.getSkill(candidate);
@@ -261,6 +269,12 @@ export interface EffectiveRank {
   effective: number;
   /** True when the clamp bit — extra `+skills` here would be wasted. */
   capped: boolean;
+  /**
+   * Set when the item database has no entry for the record, so the rank carries
+   * a name and nothing else — no ceiling, no gear bonus, no stats. Anything
+   * rendering a rank has to say so rather than present the row as complete.
+   */
+  unindexed?: true;
 }
 
 /**
@@ -281,7 +295,26 @@ export function effectiveRanks(
   for (const entry of taken) {
     if (entry.level < 1) continue;
     const skill = db.getSkill(entry.record);
-    if (!skill) continue;
+    if (!skill) {
+      // A skill the character has spent points in must never just disappear.
+      // The index can miss one - a template class the build rules skip, a mod's
+      // own tree - and a dossier that lists thirteen of a character's fifteen
+      // skills reads as complete, so the reader has no way to notice. The
+      // mastery trees are the only place this matters: a save also carries the
+      // default attack buttons and a row per potion modifier, which are not
+      // skills anyone spends a point on.
+      if (!MASTERY_TREE.test(entry.record)) continue;
+      out.set(entry.record, {
+        record: entry.record,
+        name: db.skillName(entry.record) || 'an unnamed skill',
+        invested: entry.level,
+        bonus: 0,
+        effective: entry.level,
+        capped: false,
+        unindexed: true,
+      });
+      continue;
+    }
 
     const mastery = skill.mastery;
     const bonus =
