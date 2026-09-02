@@ -234,7 +234,23 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(adviceScope(snapshot, true, { reviewStashForSale: true }).doc).toBe(review.doc);
 
     const filtered = adviceScope(snapshot, false);
-    expect(filtered.doc.projections.size).toBeGreaterThan(0);
+    // How many projections survive the stash filter is a fact about what the
+    // character is carrying at this moment, not about the code: this suite
+    // reads the live save, and one who has just emptied his bags into the
+    // stash has nothing left outside it to project. Asserting a count here
+    // failed on a review machine while passing here seven minutes later, with
+    // the game open and writing the save between the two runs.
+    //
+    // The flag itself is still covered: `adviceScope` hands the same
+    // `projections` to both scopes from one line (`session.ts:212`), so the
+    // full-scope assertion above is what proves it was asked for. What is left
+    // to check here is that the filter did not invent one - every projection
+    // kept is one of this scope's own candidates, and no more than the
+    // unfiltered build had.
+    expect(filtered.doc.projections.size).toBeLessThanOrEqual(full.doc.projections.size);
+    for (const id of filtered.doc.projections.keys()) {
+      expect(filtered.doc.candidateIds.has(id)).toBe(true);
+    }
     expect(filtered.doc.itemsById.size).toBeLessThan(snapshot.doc.itemsById.size);
     for (const item of filtered.doc.itemsById.values()) {
       expect(item.source).not.toBe('stash');

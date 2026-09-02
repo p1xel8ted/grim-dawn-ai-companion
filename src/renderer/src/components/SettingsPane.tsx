@@ -61,8 +61,8 @@ const CODEX_EFFORTS: readonly { id: string; label: string; note: string }[] = [
     note: 'In the side-by-side it spent 2.5× the reasoning re-shuffling which of the same augments goes on which slot, for the same capped resistances — and still left one bag item without a verdict on the first pass.',
   },
   { id: 'xhigh', label: 'xhigh', note: 'Extended reasoning for the hardest problems, untested for this tool.' },
-  { id: 'max', label: 'max', note: 'Deeper still, untested for this tool. Only the gpt-5.6 models accept it.' },
-  { id: 'ultra', label: 'ultra', note: 'The deepest tier, untested for this tool. Only gpt-5.6-sol and -terra accept it.' },
+  { id: 'max', label: 'max', note: 'Deeper still, untested for this tool.' },
+  { id: 'ultra', label: 'ultra', note: 'The deepest tier, untested for this tool. It can hand parts of the job to other models.' },
 ];
 
 /** Node's setTimeout ceiling, rounded down to whole seconds. */
@@ -98,7 +98,13 @@ const BACKENDS: readonly {
   note: string;
   /** The command it runs, and the placeholder for the path field. */
   command?: string;
-  models: readonly { id: string; label: string }[];
+  /**
+   * `tiers` is the efforts this model takes, where that is narrower than the
+   * backend's own list; leave it off and the model takes all of them. The
+   * codex CLI keeps the real answer in `~/.codex/models_cache.json` under
+   * `supported_reasoning_levels`, and it differs from model to model.
+   */
+  models: readonly { id: string; label: string; tiers?: readonly string[] }[];
   efforts: readonly { id: string; label: string; note: string }[];
   defaultEffort: string;
 }[] = [
@@ -107,9 +113,15 @@ const BACKENDS: readonly {
     label: 'Claude Code',
     note: 'Runs the `claude` command already on this machine and bills through the subscription it is signed into.',
     command: 'claude',
-    // Opus is what the advice quality was measured on; sonnet is untested here.
+    // Opus is what the advice quality was measured on; the other two are
+    // untested here. Fable is the strongest model the CLI will answer with, and
+    // it is twice opus a token with reasoning that cannot be switched off, so a
+    // run on it costs roughly double. These are the CLI's own aliases and each
+    // one follows the newest release of its line - `fable` reaches
+    // claude-fable-5-1 today. A full id written into settings.json still works.
     models: [
       { id: 'opus', label: 'opus (recommended)' },
+      { id: 'fable', label: 'fable (most capable, ~2x the cost)' },
       { id: 'sonnet', label: 'sonnet' },
     ],
     efforts: CLAUDE_EFFORTS,
@@ -127,8 +139,8 @@ const BACKENDS: readonly {
     models: [
       { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol (recommended)' },
       { id: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
-      { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
-      { id: 'gpt-5.5', label: 'gpt-5.5' },
+      { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna', tiers: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      { id: 'gpt-5.5', label: 'gpt-5.5', tiers: ['low', 'medium', 'high', 'xhigh'] },
     ],
     efforts: CODEX_EFFORTS,
     defaultEffort: 'medium',
@@ -168,10 +180,20 @@ export function SettingsPane({
     // No command name to offer, so no path field: this is a backend the pane
     // does not know, and guessing what it runs would be a wrong placeholder.
     command: undefined as string | undefined,
-    models: [] as readonly { id: string; label: string }[],
+    models: [] as readonly { id: string; label: string; tiers?: readonly string[] }[],
     efforts: GENERIC_EFFORTS,
     defaultEffort: 'medium',
   };
+
+  // What to offer in the effort box: the backend's whole list, unless the
+  // chosen model takes fewer - gpt-5.5 has no max or ultra, and gpt-5.6-luna no
+  // ultra. Offering them anyway is the failure the two selects exist to
+  // prevent, only a tier deep instead of a model deep: the run dies minutes in
+  // rather than at the moment it was picked. An empty model box means the first
+  // entry, which is what the box itself says.
+  const modelTiers = (backend.models.find((m) => m.id === settings?.model) ?? backend.models[0])?.tiers;
+  const efforts = modelTiers ? backend.efforts.filter((e) => modelTiers.includes(e.id)) : backend.efforts;
+  const effort = settings?.effort ?? backend.defaultEffort;
 
   return (
     <Modal title="Settings" subtitle="Written to settings.json — the CLI reads the same file" onClose={onClose}>
@@ -302,7 +324,12 @@ export function SettingsPane({
           <select
             value={settings?.model ?? ''}
             disabled={backend.models.length === 0}
-            onChange={(e) => onChange({ model: e.target.value || undefined })}
+            onChange={(e) => {
+              const id = e.target.value || undefined;
+              const tiers = (backend.models.find((m) => m.id === id) ?? backend.models[0])?.tiers;
+              const keep = !tiers || !settings?.effort || tiers.includes(settings.effort);
+              onChange(keep ? { model: id } : { model: id, effort: undefined });
+            }}
           >
             {backend.models.length === 0 ? (
               <option value="">not applicable</option>
@@ -322,27 +349,29 @@ export function SettingsPane({
           <span className="settings-label">Reasoning effort</span>
           <select
             value={settings?.effort ?? ''}
-            disabled={backend.efforts.length === 0}
+            disabled={efforts.length === 0}
             onChange={(e) => onChange({ effort: (e.target.value || undefined) as Settings['effort'] })}
           >
-            {backend.efforts.length === 0 ? (
+            {efforts.length === 0 ? (
               <option value="">not applicable</option>
             ) : (
               <>
                 <option value="">Default ({backend.defaultEffort})</option>
-                {backend.efforts.map((e) => (
+                {efforts.map((e) => (
                   <option key={e.id} value={e.id}>
                     {e.label}
                   </option>
                 ))}
+                {settings?.effort && !efforts.some((e) => e.id === settings.effort) && (
+                  <option value={settings.effort}>{settings.effort} (not offered by this model)</option>
+                )}
               </>
             )}
           </select>
         </label>
-        {backend.efforts.length > 0 && (
+        {efforts.length > 0 && (
           <p className="settings-hint">
-            {backend.efforts.find((e) => e.id === (settings?.effort ?? backend.defaultEffort))?.note ??
-              'Passed to the backend as-is.'}
+            {efforts.find((e) => e.id === effort)?.note ?? 'Passed to the backend as-is.'}
           </p>
         )}
         {/* Codex only: the claude CLI's fast mode bills API usage on top of the
