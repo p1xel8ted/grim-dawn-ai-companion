@@ -40,6 +40,7 @@ import {
 } from '../mechanics/stats.js';
 import { shortHash, type AccountFiles, type ResolvedCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
 import { candidateProjections, type CandidateProjection, type SlotProjection } from './projections.js';
+import type { PlanProjection } from '../ai/envelope.js';
 import type { AugmentOption, ClosableWitness } from './closable.js';
 import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '@grimdawn/core/save/types';
@@ -1150,12 +1151,22 @@ function damageSection(out: Writer, ctx: RenderContext): void {
     // yardstick only for a build whose damage actually rides them. On a caster
     // it prices a minor channel, and a plan told "you spent 30% of the payload"
     // would defend a cost that barely exists.
+    // The rate is already capped and already carries the weapon's additive
+    // attacks-per-second term, so this multiplies it rather than re-deriving it.
+    const attackRate = ctx.aggregate.speed.attack.rate;
     const yardstick = ridesWeaponAttacks(d)
       ? "State a plan's overall damage cost as a delta against this index."
       : "This build's damage does not ride weapon attacks (see the cadence line below), so this index prices only a minor channel — judge a plan's damage cost against the build-focus types' `+%` columns above instead, and quote the index delta only as the secondary figure it is.";
     out.line(
-      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. An index in arbitrary units for comparing this loadout against a proposed one — **not DPS**: attack speed (§3 carries the rate), crit, skill \`% Weapon Damage\` multipliers and §3's attribute damage bonus are all excluded. ${yardstick}`,
+      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. This is a **per-hit** figure and it treats every damage type alike: a flat line in a type the build never deals is scaled by the same \`+% Total Damage\` as its own, so on its own it will call an off-build stat-stick an upgrade. Read it as one component, not as the answer.`,
     );
+    const main = d.mainAttackIndex;
+    if (main) {
+      out.line();
+      out.line(
+        `**Attack throughput index: ${num(Math.round(main.index * attackRate))}** — the same arithmetic run through **${main.skill}** (rank ${main.rank}, ${main.weaponDamagePct}% weapon damage, its own flat damage and \`+%\` columns included) and multiplied by §3's ${attackRate.toFixed(2)} attacks per second. **This is the figure to compare loadouts by**, and §7 states every swap's delta against it. Still **not DPS**: crit, enemy resistance and §3's attribute damage bonus are all excluded. ${yardstick}`,
+      );
+    }
   }
 
   if (d.conversions.length) {
@@ -2038,6 +2049,54 @@ function resistText(vector: ResistVector): string {
 const OVERCAP_TARGET = 20;
 
 /**
+ * The offence clause: one throughput figure, then what it is made of.
+ *
+ * The bare payload index used to stand here alone, and it is a per-hit number
+ * that scales every damage type by the character's whole `+%` column, so a
+ * pair of large off-build flat lines could read as a double-digit upgrade while
+ * the build's own damage and its attack speed both fell. Leading with
+ * throughput folds in the main attack's `% Weapon Damage` and the attacks per
+ * second; naming the types that moved, with the share they held before, says
+ * whether the gain landed anywhere the build can use it.
+ *
+ * The per-type figures are **per-hit scoped-index points** and are labelled as
+ * such. They come off the terms before the attack rate is applied, so where a
+ * swap also moves attack speed they are a different unit from the percentage
+ * above them, and far enough apart that an off-type gain can be positive while
+ * throughput falls.
+ */
+export function throughputParts(p: PlanProjection): string[] {
+  const t = p.throughput;
+  if (!t || t.before <= 0 || t.after === t.before) return [];
+  const pct = ((t.after - t.before) / t.before) * 100;
+  const parts = [
+    `attack throughput ${signed(Math.round(pct * 10) / 10)}%${t.skill ? ` (per second, through ${t.skill})` : ' (per second)'}`,
+  ];
+
+  // A type supplying a large share of the swing from no share at all is the
+  // fact a single scalar hides, so it gets said in words.
+  const fresh = (t.moved ?? []).filter((m) => m.sharePctBefore < 1 && m.after > m.before);
+  const freshGain = fresh.reduce((n, m) => n + (m.after - m.before), 0);
+  const swing = (t.moved ?? []).reduce((n, m) => n + Math.abs(m.after - m.before), 0);
+  if (fresh.length && swing > 0 && freshGain / swing > 0.5) {
+    parts.push(
+      `${signed(Math.round(freshGain))} per-hit scoped-index points come from ` +
+        `${fresh.map((m) => m.label).join(' and ')} Damage, which is none of what this build deals today ` +
+        '(a per-hit figure, not a share of the throughput percentage above: attack speed moves one and not ' +
+        'the other). Weigh it against the weapon-attack composition, the resistance reduction the build ' +
+        'carries and what its skills scale',
+    );
+  }
+  if (p.payload && p.payload.before > 0 && p.payload.after !== p.payload.before) {
+    const raw = ((p.payload.after - p.payload.before) / p.payload.before) * 100;
+    parts.push(
+      `per-hit payload index ${signed(Math.round(raw * 10) / 10)}% before attack speed and \`% Weapon Damage\` scoping`,
+    );
+  }
+  return parts;
+}
+
+/**
  * The bullets under a candidate for one target slot. Type-first and
  * ` · `-separated throughout, so the document's own qualified-stat rule holds
  * on every figure; non-zero changes only, and the trailing clause says so.
@@ -2073,10 +2132,7 @@ function projectionLines(ctx: RenderContext, candidate: Candidate, target: SlotP
     if (d.percentAfter !== d.percentBefore) parts.push(`${d.label} Damage +${num(d.percentBefore)}% → +${num(d.percentAfter)}%`);
     if (d.flatAfter !== d.flatBefore) parts.push(`${d.label} Damage ${num(d.flatBefore)} → ${num(d.flatAfter)} flat`);
   }
-  if (p.payload && p.payload.before > 0 && p.payload.after !== p.payload.before) {
-    const pct = ((p.payload.after - p.payload.before) / p.payload.before) * 100;
-    parts.push(`weapon payload index ${signed(Math.round(pct * 10) / 10)}%`);
-  }
+  parts.push(...throughputParts(p));
   for (const s of p.speeds) {
     if (s.after !== s.before) parts.push(`${s.label.toLowerCase()} speed ${num(s.before)}% → ${num(s.after)}%`);
   }
@@ -3041,8 +3097,8 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line(
     'Trading some damage for a capped resistance is normal; a plan that costs on the order of a third of the build\'s primary `+%` damage pool is not, unless the resistances it buys are otherwise broken. ' +
       (ridesWeaponAttacks(ctx.aggregate.damage)
-        ? '§4\'s **weapon payload index** is the yardstick: state the plan\'s index delta as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out.'
-        : 'This build\'s damage does not ride weapon attacks, so §4\'s weapon payload index prices only a minor channel — the yardstick here is the build-focus types\' `+%` damage pools: state the plan\'s damage cost against those columns, and quote the index delta only as the secondary figure it is.'),
+        ? '§4\'s **attack throughput index** is the yardstick: state the plan\'s delta against it as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out. Where the gain from a swap lands in damage types that the weapon-attack composition in §4 gives no share of, say so and price it as the smaller thing it is.'
+        : 'This build\'s damage does not ride weapon attacks, so §4\'s throughput and payload indexes price only a minor channel — the yardstick here is the build-focus types\' `+%` damage pools: state the plan\'s damage cost against those columns, and quote the index delta only as the secondary figure it is.'),
   );
   out.line();
   out.line('Then a **Next levels** section, ordered cheapest-first, from the costed thresholds in §12 — but **only those worth committing to**: what to spend and which held items it buys, dismissing a competing rung in a clause rather than a row of its own. Attribute points and farming targets are in scope; skill and devotion trees are not.');

@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DbAffix, DbItem, DbSet, DbSkill, GameDb } from '@grimdawn/core/db/types';
-import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
+import {
+  aggregateCharacter,
+  attackThroughput,
+  indexTotal,
+  payloadTerms,
+} from '../src/core/mechanics/aggregate.js';
 import {
   addDamage,
   addDefense,
   applyConversions,
+  applyStagedConversions,
+  convertStage,
   armorAbsorption,
   ARMOR_PARTS,
   conversions,
@@ -14,6 +21,7 @@ import {
   maxResistContributions,
   penaltyVector,
   resistContributions,
+  type DamageKey,
 } from '../src/core/mechanics/stats.js';
 import {
   addSkillBonuses,
@@ -868,6 +876,221 @@ describe('weapon payload index', () => {
     // Attack speed, crit and % Weapon Damage are deliberately absent from the
     // arithmetic — the index compares loadouts, it does not claim DPS.
     expect(aggregate.damage.payloadIndex).toBe(295);
+  });
+
+  it('breaks the index into per-type terms that sum back to it', () => {
+    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    equipment[6] = instance({ baseName: RING });
+    const aggregate = aggregateCharacter(
+      save({ equipment, weaponSet1: [instance({ baseName: SWORD }), null] }),
+      db,
+    );
+    const terms = aggregate.damage.payloadTerms;
+    expect(terms.map((t) => t.label)).toEqual(['Physical', 'Pierce']);
+    expect(Math.round(indexTotal(terms))).toBe(aggregate.damage.payloadIndex);
+    // Biggest contributor first, so a delta can name the types that moved.
+    expect(Math.round(terms[0]!.contribution)).toBe(240);
+    expect(Math.round(terms[1]!.contribution)).toBe(55);
+  });
+});
+
+describe('conversion priority across stages', () => {
+  const row = (from: DamageKey, to: DamageKey, percent: number) => ({
+    from,
+    to,
+    fromKeys: [from],
+    toKeys: [to],
+    percent,
+  });
+
+  it('lets global conversion draw only from what the skill left behind', () => {
+    // 50% skill Physical -> Fire, then 100% global Physical -> Cold. The skill
+    // takes half; the global row converts all of the half that is left. One
+    // combined call instead treats the 50 and the 100 as competitors for the
+    // same pool and normalises them to 33/67.
+    const staged = applyStagedConversions(
+      { physical: 100 },
+      [row('physical', 'fire', 50)],
+      [row('physical', 'cold', 100)],
+    );
+    expect(staged).toEqual({ fire: 50, cold: 50 });
+    expect(applyConversions({ physical: 100 }, [row('physical', 'fire', 50), row('physical', 'cold', 100)])).not.toEqual(
+      staged,
+    );
+  });
+
+  it('never converts what the skill created a second time', () => {
+    // The global Fire -> Cold row must not touch the Fire the skill just made:
+    // damage never chains through a second pair.
+    expect(
+      applyStagedConversions({ physical: 100 }, [row('physical', 'fire', 50)], [row('fire', 'cold', 100)]),
+    ).toEqual({ physical: 50, fire: 50 });
+  });
+
+  it('still splits proportionally among rows at the same priority', () => {
+    // Within one stage the over-100% rule is unchanged: 150% drawn from one
+    // pool scales both rows back to fill exactly the pool.
+    const same = applyStagedConversions(
+      { physical: 100 },
+      [],
+      [row('physical', 'fire', 50), row('physical', 'cold', 100)],
+    );
+    expect(same.fire).toBeCloseTo(100 / 3, 9);
+    expect(same.cold).toBeCloseTo(200 / 3, 9);
+    expect(same.physical).toBeUndefined();
+  });
+
+  it('splits a stage into what it left alone and what it produced', () => {
+    const { remainder, created } = convertStage({ physical: 100 }, [row('physical', 'fire', 30)]);
+    expect(remainder).toEqual({ physical: 70 });
+    expect(created).toEqual({ fire: 30 });
+  });
+});
+
+describe('attack throughput index', () => {
+  const SWORD = 'records/items/gearweapons/sword.dbr';
+  const AMULET = 'records/items/gearaccessories/amulet.dbr';
+  const OFF_TYPE = 'records/items/gearaccessories/offtype.dbr';
+  const ON_TYPE = 'records/items/gearaccessories/ontype.dbr';
+  const SLOW = 'records/items/gearweapons/slowsword.dbr';
+  const SAVAGERY = 'records/skills/savagery.dbr';
+  const TOGGLE = 'records/skills/toggle.dbr';
+  const TOGGLE_BUFF = 'records/skills/togglebuff.dbr';
+
+  // A physical build with a default-attack replacer, in the shape the live case
+  // has: a big `+% Total Damage` pool built to serve Physical.
+  const db = stubDb({
+    items: {
+      [SWORD]: item(SWORD, {
+        name: 'Sword',
+        slot: 'WeaponMelee_Sword',
+        stats: { offensivePhysicalMin: 100, offensivePhysicalMax: 200, characterBaseAttackSpeed: -0.05 },
+      }),
+      [SLOW]: item(SLOW, {
+        name: 'Slow Sword',
+        slot: 'WeaponMelee_Sword',
+        stats: { offensivePhysicalMin: 100, offensivePhysicalMax: 200, characterBaseAttackSpeed: -0.25 },
+      }),
+      [AMULET]: item(AMULET, {
+        name: 'Plain Amulet',
+        stats: { offensivePhysicalModifier: 200, offensiveTotalDamageModifier: 100 },
+      }),
+      // The Tainted Ruby shape: a large flat line in a type the build never
+      // deals, carried by an always-on granted skill.
+      [OFF_TYPE]: item(OFF_TYPE, {
+        name: 'Off-type Amulet',
+        stats: { offensivePhysicalModifier: 140, offensiveTotalDamageModifier: 100, itemSkillName: TOGGLE },
+      }),
+      [ON_TYPE]: item(ON_TYPE, {
+        name: 'On-type Amulet',
+        stats: { offensivePhysicalModifier: 260, offensiveTotalDamageModifier: 100 },
+      }),
+    },
+    skills: {
+      [SAVAGERY]: skill(SAVAGERY, {
+        name: 'Savagery',
+        class: 'Skill_WeaponPool_Direct',
+        maxLevel: 16,
+        stats: {
+          weaponDamagePct: 150,
+          offensiveSlowBleedingMin: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60],
+        },
+      }),
+      [TOGGLE]: skill(TOGGLE, { class: 'Skill_BuffSelfToggled', buffRecord: TOGGLE_BUFF }),
+      [TOGGLE_BUFF]: skill(TOGGLE_BUFF, {
+        name: 'Flame',
+        class: 'Skill_BuffSelfToggled',
+        stats: { offensiveFireMin: 100, offensiveChaosMin: 100 },
+      }),
+    },
+  });
+
+  const wearing = (amulet: string, weapon = SWORD, rank = 10) => {
+    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    equipment[7] = instance({ baseName: amulet });
+    return aggregateCharacter(
+      save({
+        equipment,
+        weaponSet1: [instance({ baseName: weapon }), null],
+        skills: [characterSkill(SAVAGERY, rank)],
+      }),
+      db,
+    );
+  };
+
+  it('scopes the index to the default attack, weapon share and own damage included', () => {
+    const main = wearing(AMULET).damage.mainAttackIndex;
+    expect(main).toMatchObject({ skill: 'Savagery', weaponDamagePct: 150 });
+    // 150 physical midpoint x 150% = 225, x (1 + 300/100) = 900; the skill's own
+    // 60 Bleeding rides the same +% Total Damage for 60 x 2 = 120.
+    expect(main!.index).toBe(1020);
+  });
+
+  it('counts an always-on granted toggle exactly once', () => {
+    const off = wearing(OFF_TYPE);
+    expect(off.damage.ranked.find((e) => e.key === 'fire')?.flat).toBe(100);
+    expect(off.damage.ranked.find((e) => e.key === 'chaos')?.flat).toBe(100);
+    expect(off.grantedSkills.some((g) => g.skill === 'Flame' && g.counted)).toBe(true);
+  });
+
+  it('dilutes a large off-type flat gain that the per-hit index overstates', () => {
+    const before = wearing(AMULET);
+    const after = wearing(OFF_TYPE);
+    const payloadDelta = (after.damage.payloadIndex - before.damage.payloadIndex) / before.damage.payloadIndex;
+    const scoped = attackThroughput(after).throughput / attackThroughput(before).throughput - 1;
+    // The per-hit index reads the swap as a gain; scoped to the attack that
+    // delivers it, the skill's own damage sits in the denominator and does not
+    // move, so the same swap is worth materially less.
+    expect(payloadDelta).toBeGreaterThan(0);
+    expect(scoped).toBeLessThan(payloadDelta);
+  });
+
+  it('still recognises an on-type upgrade', () => {
+    const before = wearing(AMULET);
+    const after = wearing(ON_TYPE);
+    expect(attackThroughput(after).throughput).toBeGreaterThan(attackThroughput(before).throughput);
+  });
+
+  it('charges a swap for the attack speed it costs', () => {
+    const fast = wearing(AMULET, SWORD);
+    const slow = wearing(AMULET, SLOW);
+    // Same per-hit payload, fewer hits: only the throughput figure sees it.
+    expect(slow.damage.payloadIndex).toBe(fast.damage.payloadIndex);
+    expect(attackThroughput(slow).throughput).toBeLessThan(attackThroughput(fast).throughput);
+  });
+
+  it('re-reads the main attack at its new rank when +skills change', () => {
+    // % Weapon Damage and the skill's own flat both ride the rank, so a lost
+    // rank costs the index without any skill-specific code.
+    expect(wearing(AMULET, SWORD, 8).damage.mainAttackIndex!.index).toBeLessThan(
+      wearing(AMULET, SWORD, 10).damage.mainAttackIndex!.index,
+    );
+  });
+
+  it('reproduces the Tainted Ruby case: the raw index overstates the swap', () => {
+    // The live level-63 Physical/Bleeding Warder, from the projected swap in
+    // the Neck slot. Post-conversion pools and +% columns as the dossier
+    // printed them, with +% Total Damage 274 -> 265.
+    const before = payloadTerms(
+      { physical: 382, bleeding: 22, pierce: 8, lightning: 25, vitality: 6 },
+      { physical: 759, bleeding: 432, pierce: 154, lightning: 46, vitality: 39 },
+      274,
+    );
+    const after = payloadTerms(
+      { physical: 378, bleeding: 22, pierce: 8, lightning: 14, vitality: 6, fire: 97, chaos: 97 },
+      { physical: 699, bleeding: 432, pierce: 128, lightning: 86, vitality: 39, fire: 40, chaos: 143 },
+      265,
+    );
+    expect(Math.round(indexTotal(before))).toBe(4677);
+    expect(Math.round(indexTotal(after))).toBe(5210);
+
+    const contribution = (terms: typeof before, key: string) => terms.find((t) => t.key === key)?.contribution ?? 0;
+    // The whole gain is two damage types the build deals none of, and Physical,
+    // which is 86% of what it actually swings, goes backwards.
+    const offType = contribution(after, 'fire') + contribution(after, 'chaos');
+    expect(Math.round(offType)).toBe(886);
+    expect(offType).toBeGreaterThan(indexTotal(after) - indexTotal(before));
+    expect(contribution(after, 'physical')).toBeLessThan(contribution(before, 'physical'));
   });
 });
 

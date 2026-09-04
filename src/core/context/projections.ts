@@ -260,6 +260,7 @@ function trackedPairs(p: PlanProjection): { before: number; after: number }[] {
   }
   pairs.push(p.totalDamagePercent);
   if (p.payload) pairs.push(p.payload);
+  if (p.throughput) pairs.push({ before: p.throughput.before, after: p.throughput.after });
   const d = p.defense;
   if (d) {
     pairs.push(

@@ -790,19 +790,49 @@ export function applyConversions(
   flat: Partial<Record<DamageKey, number>>,
   rows: readonly Conversion[],
 ): Partial<Record<DamageKey, number>> {
+  const { remainder, created } = convertStage(flat, rows);
+  const out: Partial<Record<DamageKey, number>> = { ...remainder };
+  for (const [key, amount] of Object.entries(created) as [DamageKey, number][]) {
+    out[key] = (out[key] ?? 0) + amount;
+  }
+  return prune(out);
+}
+
+/**
+ * One conversion **priority stage**, split into what the rows left alone and
+ * what they produced.
+ *
+ * `applyConversions` sums the two back together, which is all a single stage
+ * needs. Two stages need them apart: skill-local conversion runs first, global
+ * conversion then draws from the *unconverted remainder* only, and damage the
+ * first stage created must not be converted again. Handing the whole set to one
+ * call cannot express that: it totals every draw on an input type and
+ * normalises them against each other as equals, so 50% skill Physical to Fire
+ * beside 100% global Physical to Cold comes out 33/67 where the rule says
+ * 50/50.
+ *
+ * Splitting here rather than in the caller keeps the draw arithmetic (the
+ * over-100% scaling and the damage-over-time twins that ride each move) in the
+ * one place that has always owned it.
+ */
+export function convertStage(
+  flat: Partial<Record<DamageKey, number>>,
+  rows: readonly Conversion[],
+): { remainder: Partial<Record<DamageKey, number>>; created: Partial<Record<DamageKey, number>> } {
   // Total % drawn from each in-type, to know when to scale down.
   const drawn: Partial<Record<DamageKey, number>> = {};
   for (const row of rows) {
     for (const key of row.fromKeys) drawn[key] = (drawn[key] ?? 0) + row.percent;
   }
 
-  const out: Partial<Record<DamageKey, number>> = { ...flat };
+  const remainder: Partial<Record<DamageKey, number>> = { ...flat };
+  const created: Partial<Record<DamageKey, number>> = {};
   const move = (from: DamageKey, to: DamageKey, fraction: number): void => {
     const pool = flat[from];
     if (!pool) return;
     const amount = pool * fraction;
-    out[from] = (out[from] ?? 0) - amount;
-    out[to] = (out[to] ?? 0) + amount;
+    remainder[from] = (remainder[from] ?? 0) - amount;
+    created[to] = (created[to] ?? 0) + amount;
   };
 
   for (const row of rows) {
@@ -818,8 +848,38 @@ export function applyConversions(
       }
     }
   }
-  for (const [key, value] of Object.entries(out) as [DamageKey, number][]) {
-    if (Math.abs(value) < 1e-9) delete out[key];
+  return { remainder: prune(remainder), created: prune(created) };
+}
+
+/**
+ * Conversion applied in priority order: the skill's own rows first, then the
+ * global ones over what they left behind.
+ *
+ * The two properties this has to hold at once, and which one call cannot:
+ * global rows draw from the **unconverted remainder** rather than competing
+ * with the skill's rows as equals, and damage the skill **created** never
+ * converts a second time.
+ */
+export function applyStagedConversions(
+  flat: Partial<Record<DamageKey, number>>,
+  skillRows: readonly Conversion[],
+  globalRows: readonly Conversion[],
+): Partial<Record<DamageKey, number>> {
+  const local = convertStage(flat, skillRows);
+  const global = convertStage(local.remainder, globalRows);
+  const out: Partial<Record<DamageKey, number>> = { ...global.remainder };
+  for (const stage of [global.created, local.created]) {
+    for (const [key, amount] of Object.entries(stage) as [DamageKey, number][]) {
+      out[key] = (out[key] ?? 0) + amount;
+    }
   }
-  return out;
+  return prune(out);
+}
+
+/** Drops the zeroes conversion leaves behind, so an emptied type is simply absent. */
+function prune(pool: Partial<Record<DamageKey, number>>): Partial<Record<DamageKey, number>> {
+  for (const [key, value] of Object.entries(pool) as [DamageKey, number][]) {
+    if (Math.abs(value) < 1e-9) delete pool[key];
+  }
+  return pool;
 }

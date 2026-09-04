@@ -20,7 +20,7 @@
  */
 
 import type { GameDb } from '@grimdawn/core/db/types';
-import { aggregateCharacter, type CharacterAggregate } from '../mechanics/aggregate.js';
+import { aggregateCharacter, attackThroughput, type CharacterAggregate } from '../mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../mechanics/stats.js';
 import { weaponSlotRef } from '../../shared/slots.js';
 import type { AccountFiles, ResolvedItem } from '@grimdawn/core/resolve';
@@ -400,6 +400,42 @@ function applyFit(
   install(ref, slot, `${verdict} (fits)`, fit.kind, fit.id);
 }
 
+/**
+ * The throughput pair, plus the per-type terms that moved.
+ *
+ * `moved` carries each type's old share of the index alongside its change,
+ * which is the clause that would have caught the Tainted Ruby: two types
+ * supplying the whole gain from a 0% starting share is a different fact from
+ * the same gain spread across what the build already deals.
+ */
+function throughputPair(before: CharacterAggregate, after: CharacterAggregate): PlanProjection['throughput'] {
+  const b = attackThroughput(before);
+  const a = attackThroughput(after);
+  const round = (n: number): number => Math.round(n * 10) / 10;
+
+  const termsOf = (agg: CharacterAggregate): Map<string, number> =>
+    new Map((agg.damage.mainAttackIndex?.terms ?? agg.damage.payloadTerms).map((t) => [t.label, t.contribution]));
+  const bt = termsOf(before);
+  const at = termsOf(after);
+  const total = [...bt.values()].reduce((n, v) => n + v, 0);
+  const moved = [...new Set([...bt.keys(), ...at.keys()])]
+    .map((label) => ({
+      label,
+      before: Math.round(bt.get(label) ?? 0),
+      after: Math.round(at.get(label) ?? 0),
+      sharePctBefore: total > 0 ? round(((bt.get(label) ?? 0) / total) * 100) : 0,
+    }))
+    .filter((m) => m.before !== m.after)
+    .sort((x, y) => Math.abs(y.after - y.before) - Math.abs(x.after - x.before));
+
+  return {
+    before: Math.round(b.throughput),
+    after: Math.round(a.throughput),
+    ...(b.scoped && before.damage.mainAttackIndex ? { skill: before.damage.mainAttackIndex.skill } : {}),
+    ...(moved.length ? { moved } : {}),
+  };
+}
+
 function diff(
   before: CharacterAggregate,
   after: CharacterAggregate,
@@ -493,6 +529,7 @@ function diff(
     damage,
     totalDamagePercent: { before: before.damage.totalDamagePercent, after: after.damage.totalDamagePercent },
     payload: pair(before.damage.payloadIndex, after.damage.payloadIndex),
+    throughput: throughputPair(before, after),
     defense,
     skillRanks,
     skipped,

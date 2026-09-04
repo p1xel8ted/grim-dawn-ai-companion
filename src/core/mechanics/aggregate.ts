@@ -29,6 +29,7 @@ import {
   addSpeed,
   addVector,
   applyConversions,
+  applyStagedConversions,
   armorAbsorption,
   ARMOR_PARTS,
   ATTR_KEYS,
@@ -189,6 +190,38 @@ export interface WeaponAttackSummary {
   mainAttack?: string;
 }
 
+/** One damage type's share of an offence index, kept so the sum can be explained. */
+export interface PayloadTerm {
+  key: DamageKey;
+  label: string;
+  /** Post-conversion flat damage of this type feeding the hit. */
+  flat: number;
+  /** The `+%` column that scaled it, `+% Total Damage` included. */
+  percent: number;
+  /** `flat x (1 + percent / 100)`: this type's contribution to the index. */
+  contribution: number;
+}
+
+/**
+ * The same arithmetic run through the default-attack replacer instead of a bare
+ * weapon swing.
+ *
+ * A bare-weapon index counts every flat pool at face value, which is what let a
+ * pair of off-build flat lines outweigh the loss of the type the build actually
+ * deals: the skill's own flat damage sits in the denominator and does not move
+ * when gear changes, so it dilutes an off-type gain the way it really would.
+ * Nothing here is skill-specific code. The row is read from `SkillDamage`, so a
+ * `+skills` change re-reads it at the new rank for free.
+ */
+export interface MainAttackIndex {
+  skill: string;
+  rank: number;
+  /** How much of the weapon's flat damage the skill inherits. */
+  weaponDamagePct: number;
+  index: number;
+  terms: PayloadTerm[];
+}
+
 export interface DamageProfile {
   /**
    * Damage types the build actually invests in, strongest first. Flat figures
@@ -209,6 +242,10 @@ export interface DamageProfile {
    * the payload" instead of one type at a time.
    */
   payloadIndex: number;
+  /** What `payloadIndex` is made of, so a delta can name the types that moved. */
+  payloadTerms: PayloadTerm[];
+  /** Present whenever the build has a default-attack replacer invested. */
+  mainAttackIndex?: MainAttackIndex;
   conversions: ScopedConversion[];
   weaponAttack: WeaponAttackSummary;
   /** Per-skill damage typing for the invested attack skills, biggest sink first. */
@@ -1118,6 +1155,106 @@ function collectAttackDamage(
 
 const DAMAGE_TYPE_BY_KEY = new Map(DAMAGE_TYPES.map((t) => [t.key, t]));
 
+/**
+ * Every positive flat pool times its own `+%` column, as terms rather than a
+ * total.
+ *
+ * Pure, and exported for exactly that reason: it is the seam the tests pin and
+ * the breakdown §7 prints. A single scalar could say a swap was worth +11%
+ * without saying that all of it arrived in two damage types the build does not
+ * deal, which is how an off-build amulet came to read as a major upgrade.
+ */
+export function payloadTerms(
+  flat: Partial<Record<DamageKey, number>>,
+  percent: Partial<Record<DamageKey, number>>,
+  totalPercent: number,
+): PayloadTerm[] {
+  const terms: PayloadTerm[] = [];
+  for (const [dmgKey, amount] of Object.entries(flat) as [DamageKey, number][]) {
+    if (!(amount > 0)) continue;
+    const column = (percent[dmgKey] ?? 0) + totalPercent;
+    terms.push({
+      key: dmgKey,
+      label: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.label ?? dmgKey,
+      flat: amount,
+      percent: column,
+      contribution: amount * (1 + column / 100),
+    });
+  }
+  return terms.sort((a, b) => b.contribution - a.contribution);
+}
+
+export function indexTotal(terms: readonly PayloadTerm[]): number {
+  return terms.reduce((n, t) => n + t.contribution, 0);
+}
+
+/**
+ * The index as the build's main attack delivers it.
+ *
+ * The weapon's flat damage arrives multiplied by the skill's `% Weapon Damage`,
+ * the skill's own flat damage joins it, and the skill's own `+%` columns stack
+ * on the character's. Conversion runs in the documented priority order
+ * (`applyStagedConversions`): the skill's own rows first, then the global ones
+ * over what those left behind, with skill-created damage held out of the second
+ * stage so nothing converts twice.
+ *
+ * Still an index and still not DPS: no crit, no enemy resistance, no attribute
+ * bonus.
+ */
+function mainAttackTerms(
+  attackRows: Map<string, AttackRow>,
+  damage: DamageContribution,
+  globalConversions: readonly Conversion[],
+): MainAttackIndex | undefined {
+  const row = [...attackRows.values()].find((r) => r.isDefaultAttack);
+  if (!row) return undefined;
+  const share = row.weaponDamagePct / 100;
+
+  const raw: Partial<Record<DamageKey, number>> = {};
+  for (const [dmgKey, amount] of Object.entries(damage.flat) as [DamageKey, number][]) {
+    if (amount) raw[dmgKey] = (raw[dmgKey] ?? 0) + amount * share;
+  }
+  for (const [dmgKey, amount] of Object.entries(row.flat) as [DamageKey, number][]) {
+    if (amount) raw[dmgKey] = (raw[dmgKey] ?? 0) + amount;
+  }
+
+  const flat = applyStagedConversions(raw, row.conversions, globalConversions);
+  const percent: Partial<Record<DamageKey, number>> = {};
+  for (const key of new Set([...Object.keys(damage.percent), ...Object.keys(row.ownPercent)]) as Set<DamageKey>) {
+    percent[key] = (damage.percent[key] ?? 0) + (row.ownPercent[key] ?? 0);
+  }
+
+  const terms = payloadTerms(flat, percent, damage.totalPercent + row.ownTotalPercent);
+  return {
+    skill: row.label,
+    rank: row.rank || 1,
+    weaponDamagePct: Math.round(row.weaponDamagePct),
+    index: Math.round(indexTotal(terms)),
+    terms,
+  };
+}
+
+/**
+ * The comparable offence scalar: what the build's attack puts out per second.
+ *
+ * `SpeedLine.rate` is already the capped attacks-per-second figure built from
+ * the weapon's additive delta, so this multiplies rather than re-deriving it,
+ * and an at-cap character correctly gains nothing from more `+% Attack Speed`. It
+ * falls back to the bare payload where the build has no default-attack
+ * replacer, which is what a character swinging the weapon itself actually does.
+ */
+export function attackThroughput(aggregate: CharacterAggregate): {
+  index: number;
+  rate: number;
+  throughput: number;
+  scoped: boolean;
+} {
+  const main = aggregate.damage.mainAttackIndex;
+  const index = main?.index ?? aggregate.damage.payloadIndex;
+  const rate = aggregate.speed.attack.rate;
+  return { index, rate, throughput: index * rate, scoped: main !== undefined };
+}
+
 function damageProfile(
   damage: DamageContribution,
   conversionRows: ScopedConversion[],
@@ -1215,15 +1352,20 @@ function damageProfile(
   // The payload index, off the unrounded pools. Kept to one decision: every
   // positive post-conversion flat pool times its own accumulated `+%` column
   // (plus the `+% Total Damage` that scales all of them).
-  let payloadIndex = 0;
-  for (const [dmgKey, amount] of Object.entries(flat) as [DamageKey, number][]) {
-    if (amount > 0) payloadIndex += amount * (1 + ((damage.percent[dmgKey] ?? 0) + damage.totalPercent) / 100);
-  }
+  const terms = payloadTerms(flat, damage.percent, damage.totalPercent);
+  const payloadIndex = indexTotal(terms);
+  const mainAttackIndex = mainAttackTerms(
+    attackRows,
+    damage,
+    conversionRows.filter((c) => c.scope === 'global'),
+  );
 
   return {
     ranked,
     totalDamagePercent: Math.round(damage.totalPercent),
     payloadIndex: Math.round(payloadIndex),
+    payloadTerms: terms,
+    ...(mainAttackIndex ? { mainAttackIndex } : {}),
     conversions: conversionRows,
     weaponAttack,
     skillDamage,

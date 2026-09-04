@@ -118,6 +118,26 @@ export const planProjectionSchema = z.object({
    */
   payload: z.object({ before: z.number(), after: z.number() }).optional(),
   /**
+   * The comparable offence figure: the payload index scoped to the build's main
+   * attack and multiplied by its capped attacks per second. The payload index
+   * alone is a per-hit number that treats every damage type alike, so a swap
+   * could read as a large upgrade while dealing its gain entirely in types the
+   * build does not use and costing attack speed on the way. Optional: older runs.
+   */
+  throughput: z
+    .object({
+      before: z.number(),
+      after: z.number(),
+      /** Named when the figure is scoped to a default-attack replacer rather than a bare swing. */
+      skill: z.string().optional(),
+      /** Per-type contributions that moved, biggest change first. */
+      moved: z
+        .object({ label: z.string(), before: z.number(), after: z.number(), sharePctBefore: z.number() })
+        .array()
+        .optional(),
+    })
+    .optional(),
+  /**
    * The defence and attribute block, straight off the two aggregates — what
    * the models were hand-computing in prose notes. Contributions only where
    * §3 models contributions only (OA/DA/health; the engine's level- and

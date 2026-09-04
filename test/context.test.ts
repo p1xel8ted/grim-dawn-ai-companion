@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-import { buildContextDoc, DEFAULT_MAX_TOKENS, devotionBindings, type ContextInput } from '../src/core/context/builder.js';
+import {
+  buildContextDoc,
+  DEFAULT_MAX_TOKENS,
+  devotionBindings,
+  throughputParts,
+  type ContextInput,
+} from '../src/core/context/builder.js';
+import type { PlanProjection } from '../src/core/ai/envelope.js';
 import { damageIdentity, equipGroup, estimateTokens, selectCandidates } from '../src/core/context/filters.js';
 import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
 import type { DbItem, DbSkill, GameDb } from '@grimdawn/core/db/types';
@@ -123,6 +130,37 @@ function dbItem(over: Partial<DbItem> = {}): DbItem {
     ...over,
   };
 }
+
+describe('the offence clause on a projection line', () => {
+  it('keeps the per-hit off-type figure in its own unit when attack speed also moves', () => {
+    // The shape the Tainted Ruby had, and the one that makes the units differ:
+    // a large flat gain in a type the build never deals, on an item that also
+    // costs attack speed. The percentage is throughput; the `+N` beside it is
+    // per-hit scoped-index points, and the two are not the same currency.
+    const projection = {
+      throughput: {
+        before: 1000,
+        after: 900,
+        skill: 'Savagery',
+        moved: [
+          { label: 'Chaos', before: 0, after: 500, sharePctBefore: 0 },
+          { label: 'Physical', before: 900, after: 800, sharePctBefore: 90 },
+        ],
+      },
+      payload: { before: 1000, after: 1400 },
+    } as unknown as PlanProjection;
+
+    const parts = throughputParts(projection);
+    const joined = parts.join(' | ');
+    // Throughput fell even though the per-hit index rose: the exact case where
+    // calling the fresh gain a share "of that" would be wrong.
+    expect(joined).toContain('attack throughput -10%');
+    expect(joined).toContain('per-hit payload index +40%');
+    expect(joined).toContain('+500 per-hit scoped-index points come from Chaos Damage');
+    expect(joined).toContain('not a share of the throughput percentage above');
+    expect(joined).not.toMatch(/\+500 of that/);
+  });
+});
 
 describe('formatStats', () => {
   const db = stubDb({ 'records/skills/a.dbr': 'Amarasta’s Quick Cut' });
@@ -788,6 +826,11 @@ describe.skipIf(!canRunFixture)(
     // as an index with its exclusions named, never DPS.
     expect(doc.markdown).toMatch(/\*\*Weapon payload index: [\d,.]+\*\*/);
     expect(doc.markdown).toContain('**not DPS**');
+    // And the figure loadouts are actually compared by: the per-hit index run
+    // through the main attack and multiplied by the attacks per second, so an
+    // off-build flat line cannot read as an upgrade on its own.
+    expect(doc.markdown).toMatch(/\*\*Attack throughput index: [\d,.]+\*\*/);
+    expect(doc.markdown).toContain('This is the figure to compare loadouts by');
     // Devotion is declared static, and no sign glitch survives anywhere.
     expect(doc.markdown).toContain('no gear change moves them');
     expect(doc.markdown).not.toMatch(/\+-\d/);
@@ -798,7 +841,7 @@ describe.skipIf(!canRunFixture)(
     // _Suchka's damage rides weapon attacks, so the index is the yardstick.
     const attack = buildContextDoc(input);
     expect(attack.markdown).toContain("State a plan's overall damage cost as a delta against this index.");
-    expect(attack.markdown).toContain('**weapon payload index** is the yardstick');
+    expect(attack.markdown).toContain('**attack throughput index** is the yardstick');
 
     // The same character with the weapon-attack channels cleared is a caster:
     // the index prices a minor channel, and §4 and §11 must both say so and
@@ -818,9 +861,10 @@ describe.skipIf(!canRunFixture)(
     const doc = buildContextDoc(caster);
     expect(doc.markdown).toContain("rides §3's **casting speed** line");
     expect(doc.markdown).toContain("judge a plan's damage cost against the build-focus types' `+%` columns");
+    expect(doc.markdown).toContain('throughput and payload indexes price only a minor channel');
     expect(doc.markdown).toContain('the yardstick here is the build-focus types');
     expect(doc.markdown).not.toContain("State a plan's overall damage cost as a delta against this index.");
-    expect(doc.markdown).not.toContain('**weapon payload index** is the yardstick');
+    expect(doc.markdown).not.toContain('**attack throughput index** is the yardstick');
   });
 
   it('states sustain with its sources, the rule for it, and a skill’s own leech on the skill', async () => {

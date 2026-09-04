@@ -794,6 +794,9 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
       // The plan trades a little payload for the resistance moves above —
       // small against the index, which is the argument the note exists to show.
       payload: { before: 41200, after: 39500 },
+      // The figure loadouts are compared by: the same trade after the main
+      // attack's share and the attacks per second are folded in.
+      throughput: { before: 96400, after: 93100, skill: 'Cadence' },
       defense: {
         weakestPart: { slotBefore: 'Hands', slotAfter: 'Hands', before: 945, after: 1159 },
         armorMean: { before: 1381, after: 1415 },

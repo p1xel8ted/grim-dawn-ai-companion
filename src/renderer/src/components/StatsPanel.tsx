@@ -358,10 +358,20 @@ function DamageSection({
             .join(' · ')}
         </div>
       )}
+      {projection?.throughput && (
+        <div
+          className={`stats-note payload-note ${deltaClass(projection.throughput.after - projection.throughput.before)}`}
+        >
+          attack throughput {payloadFmt(projection.throughput.before)} → {payloadFmt(projection.throughput.after)} (
+          {payloadDelta(projection.throughput)})
+          {projection.throughput.skill ? ` per second through ${projection.throughput.skill}` : ' per second'}; an index,
+          not DPS
+        </div>
+      )}
       {projection?.payload && (
         <div className={`stats-note payload-note ${deltaClass(projection.payload.after - projection.payload.before)}`}>
           payload index {payloadFmt(projection.payload.before)} → {payloadFmt(projection.payload.after)} (
-          {payloadDelta(projection.payload)}) — flat pools × their +% columns; an index, not DPS
+          {payloadDelta(projection.payload)}) — per hit, flat pools × their +% columns, every damage type alike
         </div>
       )}
       {projection && projection.skillRanks.length > 0 && (
