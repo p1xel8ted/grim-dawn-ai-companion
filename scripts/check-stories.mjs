@@ -756,10 +756,21 @@ check(
   fireAfterTitle ?? '(no title)',
 );
 
-// The payload note: the index delta as a percentage, framed as an index.
-const payloadNote = await page.locator('.payload-note').first().innerText();
-check('the payload note states the index delta', /payload index 41\.2k → 39\.5k/.test(payloadNote), payloadNote);
-check('and frames it as an index, not DPS', /not DPS/.test(payloadNote));
+// The offence notes: throughput leads, because that is the figure loadouts are
+// compared by, and the per-hit payload index sits under it as its component.
+const offenceNotes = await page.locator('.payload-note').allInnerTexts();
+check(
+  'the throughput note leads with the figure loadouts are compared by',
+  /attack throughput 96\.4k → 93\.1k/.test(offenceNotes[0] ?? ''),
+  offenceNotes[0] ?? '(none)',
+);
+check('and names the attack it is scoped to', /through Cadence/.test(offenceNotes[0] ?? ''));
+check('and frames it as an index, not DPS', /not DPS/.test(offenceNotes[0] ?? ''));
+check(
+  'the payload note states the per-hit index under it',
+  /payload index 41\.2k → 39\.5k/.test(offenceNotes[1] ?? ''),
+  offenceNotes[1] ?? '(none)',
+);
 
 // The defense block reaches the sheet: attribute and armour rows carry afters.
 const cunningRow = await page.locator('.stat-row', { hasText: 'Cunning' }).first().innerText();

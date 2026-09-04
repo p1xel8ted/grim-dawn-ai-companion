@@ -13,10 +13,12 @@
  * Usage: `npm run app:check` (builds first). Needs a Grim Dawn install, like
  * every other live check in this repo.
  *
- * The `env -u ELECTRON_RUN_AS_NODE` in the npm script is load-bearing: some
- * shells (Claude Code's among them) export it, and it turns the Electron binary
- * into plain Node, so `require('electron').protocol` is undefined and the main
- * process dies before it runs a line.
+ * `ELECTRON_RUN_AS_NODE` is dropped from the launch environment below, because
+ * some shells (Claude Code's among them) export it, and it turns the Electron
+ * binary into plain Node: `require('electron').protocol` is undefined and the
+ * main process dies before it runs a line. This used to be an `env -u` prefix
+ * on the npm script, which is a Unix command and simply fails on Windows, where
+ * the check runs too.
  */
 
 import { _electron as electron } from 'playwright';
@@ -101,11 +103,17 @@ installCharacter(firstCharacter);
 const shot = process.env.SHOT;
 /** A mock answers inside a frame; a real call is ~500 s and the ceiling is 900. */
 const runBudgetMs = Number(process.env.RUN_BUDGET_MS ?? 120_000);
+/** The environment Electron is launched with, minus the variable that guts it. */
+function launchEnv(extra) {
+  const { ELECTRON_RUN_AS_NODE: _drop, ...rest } = process.env;
+  return { ...rest, ...extra };
+}
+
 const QUESTION = 'app check — verifying the pipeline';
 
 const app = await electron.launch({
   args: ['out/main/index.cjs'],
-  env: { ...process.env, GD_DATA_DIR: dataDir, GD_SAVE_DIR: saves.dir },
+  env: launchEnv({ GD_DATA_DIR: dataDir, GD_SAVE_DIR: saves.dir }),
 });
 const page = await app.firstWindow();
 const problems = [];
@@ -452,7 +460,7 @@ check(
 
 const again = await electron.launch({
   args: ['out/main/index.cjs'],
-  env: { ...process.env, GD_DATA_DIR: dataDir, GD_SAVE_DIR: saves.dir },
+  env: launchEnv({ GD_DATA_DIR: dataDir, GD_SAVE_DIR: saves.dir }),
 });
 const reopened = await again.firstWindow();
 await reopened.locator('.loadout-grid').waitFor({ state: 'visible', timeout: 120_000 });

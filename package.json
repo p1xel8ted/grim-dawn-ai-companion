@@ -21,7 +21,7 @@
         "storybook:build": "storybook build -o out/storybook",
         "stories:shoot": "node scripts/shoot-stories.mjs",
         "stories:check": "node scripts/check-stories.mjs",
-        "app:check": "npm run build && env -u ELECTRON_RUN_AS_NODE node scripts/check-app.mjs"
+        "app:check": "npm run build && node scripts/check-app.mjs"
     },
     "dependencies": {
         "commander": "^14.0.1",
