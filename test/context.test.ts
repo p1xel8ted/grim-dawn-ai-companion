@@ -143,8 +143,8 @@ describe('the offence clause on a projection line', () => {
         after: 900,
         skill: 'Savagery',
         moved: [
-          { label: 'Chaos', before: 0, after: 500, sharePctBefore: 0 },
-          { label: 'Physical', before: 900, after: 800, sharePctBefore: 90 },
+          { label: 'Chaos', before: 0, after: 500 },
+          { label: 'Physical', before: 900, after: 800 },
         ],
       },
       payload: { before: 1000, after: 1400 },
@@ -156,9 +156,30 @@ describe('the offence clause on a projection line', () => {
     // calling the fresh gain a share "of that" would be wrong.
     expect(joined).toContain('attack throughput -10%');
     expect(joined).toContain('per-hit payload index +40%');
-    expect(joined).toContain('+500 per-hit scoped-index points come from Chaos Damage');
-    expect(joined).toContain('not a share of the throughput percentage above');
+    expect(joined).toContain('Chaos Damage supplies +500 per-hit scoped-index points');
+    expect(joined).toContain('none of it is damage this build deals today');
+    // Strip Chaos and the swap is a loss, which is the whole point of saying it.
+    expect(joined).toContain('without it the scoped per-hit index falls 100');
+    expect(joined).toContain('not a share of that percentage');
     expect(joined).not.toMatch(/\+500 of that/);
+  });
+
+  it('stays quiet when the swap improves without the new damage types', () => {
+    // Same fresh Chaos line, but Physical rises too: strip Chaos and the swap
+    // is still an improvement, so the headline does not rest on damage the
+    // build cannot use and the clause has nothing to warn about.
+    const parts = throughputParts({
+      throughput: {
+        before: 1000,
+        after: 1600,
+        skill: 'Savagery',
+        moved: [
+          { label: 'Chaos', before: 0, after: 500 },
+          { label: 'Physical', before: 900, after: 1000 },
+        ],
+      },
+    } as unknown as PlanProjection);
+    expect(parts.join(' | ')).not.toContain('scoped-index points');
   });
 });
 

@@ -417,13 +417,11 @@ function throughputPair(before: CharacterAggregate, after: CharacterAggregate): 
     new Map((agg.damage.mainAttackIndex?.terms ?? agg.damage.payloadTerms).map((t) => [t.label, t.contribution]));
   const bt = termsOf(before);
   const at = termsOf(after);
-  const total = [...bt.values()].reduce((n, v) => n + v, 0);
   const moved = [...new Set([...bt.keys(), ...at.keys()])]
     .map((label) => ({
       label,
       before: Math.round(bt.get(label) ?? 0),
       after: Math.round(at.get(label) ?? 0),
-      sharePctBefore: total > 0 ? round(((bt.get(label) ?? 0) / total) * 100) : 0,
     }))
     .filter((m) => m.before !== m.after)
     .sort((x, y) => Math.abs(y.after - y.before) - Math.abs(x.after - x.before));

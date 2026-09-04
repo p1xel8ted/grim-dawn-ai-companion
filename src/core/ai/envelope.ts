@@ -132,7 +132,7 @@ export const planProjectionSchema = z.object({
       skill: z.string().optional(),
       /** Per-type contributions that moved, biggest change first. */
       moved: z
-        .object({ label: z.string(), before: z.number(), after: z.number(), sharePctBefore: z.number() })
+        .object({ label: z.string(), before: z.number(), after: z.number() })
         .array()
         .optional(),
     })
