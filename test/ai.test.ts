@@ -697,11 +697,30 @@ describe('codex-cli provider', () => {
     // Fast mode (`service_tier=fast`) defaults to on — it is included in the
     // ChatGPT subscription and roughly halves the wait.
     expect(exec.args).toContain('service_tier=fast');
-    // The system prompt is the prompt argument; the dossier and the question
-    // arrive on stdin, byte-identical to what the claude backend sends.
-    expect(exec.args[exec.args.length - 1]).toBe(ADVISOR_SYSTEM_PROMPT);
+    // The prompt argument is `-`, which is codex's own "read the instructions
+    // from stdin". The persona, the dossier and the question all travel there.
+    expect(exec.args[exec.args.length - 1]).toBe('-');
+    expect(exec.stdin.startsWith(ADVISOR_SYSTEM_PROMPT)).toBe(true);
     expect(exec.stdin).toContain('DOC');
     expect(exec.stdin).toContain('why?');
+  });
+
+  it('keeps the command line short enough to spawn on Windows', async () => {
+    // The persona used to be the prompt argument. At ~32k characters against a
+    // Windows command line that stops at ~32,767 including the executable path,
+    // the feature ran a few hundred characters from `spawn ENAMETOOLONG`, and a
+    // routine wording change pushed it over. Nothing on the command line may
+    // grow with the prompt or the dossier again, so this measures the real
+    // invocation with a large dossier rather than trusting the shape of it.
+    const spawn = fakeCodex((_run, child) => finish(child, codexStream('ok')));
+    const provider = createCodexCliProvider({ spawn: spawn.fn });
+    await provider.advise({ contextDoc: 'D'.repeat(200_000), question: 'Q'.repeat(5_000) });
+
+    const exec = spawn.runs.find((r) => r.args[0] === 'exec')!;
+    expect(exec.args.join(' ').length).toBeLessThan(1_000);
+    expect(exec.args.some((a) => a.includes(ADVISOR_SYSTEM_PROMPT))).toBe(false);
+    // The big payload really did go somewhere: stdin.
+    expect(exec.stdin.length).toBeGreaterThan(200_000);
   });
 
   it('fast mode can be declined', async () => {

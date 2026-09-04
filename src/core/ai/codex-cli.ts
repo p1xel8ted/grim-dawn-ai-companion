@@ -236,14 +236,25 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
         '-c',
         `model_reasoning_effort=${effort}`,
         ...(fast ? ['-c', 'service_tier=fast'] : []),
-        systemPrompt,
+        // `-` means "read the instructions from stdin". The persona used to be
+        // this argument, and it is ~32k characters against a Windows command
+        // line that stops at ~32,767 including the executable path: the whole
+        // feature sat a few hundred characters from failing, and a routine
+        // wording change pushed it over into `spawn ENAMETOOLONG`. Nothing on
+        // the command line now grows with the prompt or the dossier.
+        '-',
       ];
 
       const stream = codexReader(onActivity);
       const started = Date.now();
       const proc = await run(
         args,
-        buildUserTurn(req.contextDoc, req.question, req.planOnly),
+        // With the prompt read from stdin, the dossier no longer arrives as
+        // codex's own `<stdin>` block, so the two are joined here in the order
+        // the model used to see them.
+        `${systemPrompt}
+
+${buildUserTurn(req.contextDoc, req.question, req.planOnly)}`,
         timeoutMs,
         signal,
         stream.read,
