@@ -128,6 +128,12 @@ export const planProjectionSchema = z.object({
     .object({
       before: z.number(),
       after: z.number(),
+      /**
+       * The same throughput with the damage types this swap *introduces* taken
+       * back out, rate included. What says whether a positive headline stands
+       * on damage the build already deals, or only on damage it does not.
+       */
+      withoutNew: z.number().optional(),
       /** Named when the figure is scoped to a default-attack replacer rather than a bare swing. */
       skill: z.string().optional(),
       /** Per-type contributions that moved, biggest change first. */

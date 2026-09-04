@@ -2062,8 +2062,10 @@ const OVERCAP_TARGET = 20;
  * The per-type figures are **per-hit scoped-index points** and are labelled as
  * such. They come off the terms before the attack rate is applied, so where a
  * swap also moves attack speed they are a different unit from the percentage
- * above them, and far enough apart that an off-type gain can be positive while
- * throughput falls.
+ * above them. The counterfactual beside them is not: it is throughput, rate
+ * included, because the question it answers is about the headline. Deciding a
+ * throughput claim on a per-hit subtraction gets the wrong answer whenever
+ * speed moves, which is the case this clause exists for.
  */
 export function throughputParts(p: PlanProjection): string[] {
   const t = p.throughput;
@@ -2073,25 +2075,22 @@ export function throughputParts(p: PlanProjection): string[] {
     `attack throughput ${signed(Math.round(pct * 10) / 10)}%${t.skill ? ` (per second, through ${t.skill})` : ' (per second)'}`,
   ];
 
-  // A type the build dealt *nothing* of before the swap: `before === 0` is the
-  // predicate the sentence below actually asserts, so it is the test, rather
-  // than a small share standing in for "about none".
-  const moved = t.moved ?? [];
-  const fresh = moved.filter((m) => m.before === 0 && m.after > 0);
+  // Only a gain needs debunking. A candidate already reading -43% is not an
+  // upgrade whose case rests on the wrong damage, and appending the paragraph
+  // below to every loss is how a section of two hundred candidates gets noisy.
+  const fresh = (t.moved ?? []).filter((m) => m.before === 0 && m.after > 0);
   const freshGain = fresh.reduce((n, m) => n + m.after, 0);
-  // And the clause is worth printing exactly when the rest of the swap does not
-  // stand on its own: strip the fresh types and ask whether what is left still
-  // improves. A sign test, not a share threshold - the question is whether the
-  // headline depends on damage the build does not deal, and that has an answer.
-  const indexDelta = moved.reduce((n, m) => n + (m.after - m.before), 0);
-  const withoutFresh = indexDelta - freshGain;
-  if (fresh.length && freshGain > 0 && withoutFresh <= 0) {
+  // `withoutNew` is the same throughput with those types taken out, rate and
+  // all, so this compares like with like: does the gain survive without damage
+  // the build does not deal? A sign test, not a cutoff.
+  if (t.after > t.before && fresh.length && t.withoutNew !== undefined && t.withoutNew <= t.before) {
+    const counterfactual = ((t.withoutNew - t.before) / t.before) * 100;
     parts.push(
-      `${fresh.map((m) => m.label).join(' and ')} Damage supplies ${signed(Math.round(freshGain))} per-hit ` +
-        `scoped-index points, and none of it is damage this build deals today: without it the scoped per-hit ` +
-        `index ${withoutFresh < 0 ? `falls ${num(Math.round(-withoutFresh))}` : 'does not move'}, so the figure ` +
-        'above does not stand on the damage types the build actually uses. Per-hit points, not a share of that ' +
-        'percentage: attack speed moves one and not the other',
+      `${signed(Math.round(freshGain))} per-hit scoped-index points come from ` +
+        `${fresh.map((m) => m.label).join(' and ')} Damage, which this build deals none of today: without them ` +
+        `the swap is ${signed(Math.round(counterfactual * 10) / 10)}% attack throughput rather than the ` +
+        `${signed(Math.round(pct * 10) / 10)}% above, so the gain does not stand on the damage types the build ` +
+        'actually uses',
     );
   }
   if (p.payload && p.payload.before > 0 && p.payload.after !== p.payload.before) {

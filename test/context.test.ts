@@ -141,6 +141,7 @@ describe('the offence clause on a projection line', () => {
       throughput: {
         before: 1000,
         after: 900,
+        withoutNew: 800,
         skill: 'Savagery',
         moved: [
           { label: 'Chaos', before: 0, after: 500 },
@@ -156,12 +157,73 @@ describe('the offence clause on a projection line', () => {
     // calling the fresh gain a share "of that" would be wrong.
     expect(joined).toContain('attack throughput -10%');
     expect(joined).toContain('per-hit payload index +40%');
-    expect(joined).toContain('Chaos Damage supplies +500 per-hit scoped-index points');
-    expect(joined).toContain('none of it is damage this build deals today');
-    // Strip Chaos and the swap is a loss, which is the whole point of saying it.
-    expect(joined).toContain('without it the scoped per-hit index falls 100');
-    expect(joined).toContain('not a share of that percentage');
+    // The headline is already a loss, so there is no positive claim to debunk
+    // and the dependency clause stays out of it. The units still differ, which
+    // is what the two percentages above prove.
+    expect(joined).not.toContain('scoped-index points');
     expect(joined).not.toMatch(/\+500 of that/);
+  });
+
+  it('fires when attack speed hides the dependency, which a per-hit subtraction misses', () => {
+    // On-build damage genuinely rises (1000 -> 1100 per hit) but the rate falls
+    // to 0.7, so without the 500 fresh off-type points the swap is 770 against
+    // 1000: a 23% loss wearing a +12% headline. Subtracting per-hit terms says
+    // the opposite, because +100 on-build looks like the swap standing on its
+    // own until the rate is applied.
+    const parts = throughputParts({
+      throughput: {
+        before: 1000,
+        after: 1120,
+        withoutNew: 770,
+        skill: 'Savagery',
+        moved: [
+          { label: 'Chaos', before: 0, after: 500 },
+          { label: 'Physical', before: 1000, after: 1100 },
+        ],
+      },
+    } as unknown as PlanProjection);
+    const joined = parts.join(' | ');
+    expect(joined).toContain('attack throughput +12%');
+    expect(joined).toContain('+500 per-hit scoped-index points come from Chaos Damage');
+    expect(joined).toContain('without them the swap is -23% attack throughput rather than the +12% above');
+  });
+
+  it('says nothing about damage types on a swap that is already a loss', () => {
+    // A weapon candidate at -43% is not an upgrade whose case needs debunking.
+    expect(
+      throughputParts({
+        throughput: {
+          before: 1000,
+          after: 570,
+          withoutNew: 400,
+          skill: 'Savagery',
+          moved: [
+            { label: 'Chaos', before: 0, after: 170 },
+            { label: 'Physical', before: 900, after: 400 },
+          ],
+        },
+      } as unknown as PlanProjection).join(' | '),
+    ).not.toContain('scoped-index points');
+  });
+
+  it('does not count a type the build already deals a fraction of as new', () => {
+    // The contributions are stored unrounded precisely so this reads as what it
+    // is. Rounded to integers first, 0.4 would have become 0 and this type
+    // would have been announced as damage the build deals none of.
+    expect(
+      throughputParts({
+        throughput: {
+          before: 1000,
+          after: 1200,
+          withoutNew: 900,
+          skill: 'Savagery',
+          moved: [
+            { label: 'Chaos', before: 0.4, after: 300 },
+            { label: 'Physical', before: 900, after: 800 },
+          ],
+        },
+      } as unknown as PlanProjection).join(' | '),
+    ).not.toContain('scoped-index points');
   });
 
   it('stays quiet when the swap improves without the new damage types', () => {
@@ -172,6 +234,7 @@ describe('the offence clause on a projection line', () => {
       throughput: {
         before: 1000,
         after: 1600,
+        withoutNew: 1100,
         skill: 'Savagery',
         moved: [
           { label: 'Chaos', before: 0, after: 500 },
