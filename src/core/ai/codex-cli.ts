@@ -16,9 +16,12 @@
  * - `--ephemeral` is claude's `--no-session-persistence`; `-s read-only` plus an
  *   empty tmpdir cwd (hence `--skip-git-repo-check`) plus `web_search=disabled`
  *   keeps an agentic CLI a pure one-shot completion.
- * - The system prompt travels as the prompt *argument* (codex has no
- *   `--system-prompt` flag); the dossier is piped and arrives as the CLI's own
- *   `<stdin>` block under it, so the persona stays identical across runs.
+ * - A bare `-` is codex's "read the instructions from stdin", and the persona
+ *   and the dossier both go down it, joined by a blank line. Codex has no
+ *   `--system-prompt` flag, so the persona used to be the prompt argument -
+ *   which put ~32k characters on a Windows command line that stops at ~32,767.
+ *   The trade is that the dossier no longer arrives as the CLI's own `<stdin>`
+ *   block, so the two are concatenated here in the order it used to see them.
  *
  * A subscription run has no dollar figure, so `usage.costUsd` is never set —
  * the envelope and the usage lines treat "absent" as "included in the
@@ -43,20 +46,28 @@ import { defaultSpawn, notFoundMessage, runCommand, stderrTail, type RunResult, 
 export const CODEX_CLI_ID = 'codex-cli';
 
 /**
- * gpt-5.6-sol at **medium** — the frontier model of the current generation,
- * picked by the user when the backend landed (2026-08-10). Medium was then
- * confirmed by an A/B against high on the live character, same method as the
- * opus default: identical equips and socket fills, every resistance capped in
- * both, 9 of 12 non-KEEP moves byte-identical — high spent 15.8k thinking
- * tokens to medium's 6.3k (668s vs 440s, both runs pre-fast-mode) re-shuffling
- * which of the same three resistance powders goes where, and its *first* draft
- * was the less clean one (2 warnings incl. an `unaddressed-item` vs 1).
+ * gpt-6-astra at **medium**, picked by the user on 2026-09-05 the same way
+ * gpt-5.6-sol was picked when this backend landed. It heads the CLI's own
+ * roster (priority 1) and takes every effort tier the backend offers, ultra
+ * included. Sol is still in the picker and a settings file naming it still runs.
+ *
+ * **Medium is inherited here, not re-measured.** The A/B that settled it ran on
+ * sol against high (2026-08-10, both runs pre-fast-mode): identical equips and
+ * socket fills, every resistance capped in both, 9 of 12 non-KEEP moves
+ * byte-identical - high spent 15.8k thinking tokens to medium's 6.3k (668s vs
+ * 440s) re-shuffling which of the same three resistance powders goes where, and
+ * its *first* draft was the less clean one (2 warnings incl. an
+ * `unaddressed-item` vs 1). Astra's roster entry defaults to medium too, which
+ * is agreement rather than evidence: no advice run has been made on astra here,
+ * and if one wants a different tier this is the constant to change.
+ *
  * Effort names are the Responses API's own enum (`none`…`max`, plus `ultra` on
- * the 5.6 models — verified live; `minimal` is rejected there, and there is no
- * `fast`). `none` is deliberately not offered in settings: the floor is `low`,
- * because an advisory answer with no reasoning is a plan acted on blind.
+ * the 5.6 and 6 models - verified live on 5.6, and read off the roster for
+ * astra; `minimal` is rejected there, and there is no `fast`). `none` is
+ * deliberately not offered in settings: the floor is `low`, because an advisory
+ * answer with no reasoning is a plan acted on blind.
  */
-export const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol';
+export const CODEX_DEFAULT_MODEL = 'gpt-6-astra';
 export const CODEX_DEFAULT_EFFORT = 'medium';
 
 export interface CodexCliOptions {
@@ -86,9 +97,10 @@ interface CodexLaunch {
 
 /**
  * Windows cannot execute npm's `.cmd`/`.ps1` shims through `spawn()` without a
- * shell. A shell is the wrong answer here: the system prompt is an argument,
- * contains shell metacharacters, and is far longer than cmd.exe's command-line
- * limit. Resolve the official npm launcher's native executable instead.
+ * shell. Moving the prompt to stdin removed the length problem, but a shell is
+ * still the wrong answer: cmd.exe re-parses every argument it is handed, and it
+ * leaves which executable actually ran up to the shim. Resolve the official npm
+ * launcher's native executable instead.
  *
  * Kept injectable so the path arithmetic is testable on every host. If a future
  * package layout is unfamiliar, leave the command untouched and let the normal

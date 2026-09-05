@@ -44,7 +44,13 @@ const CLAUDE_EFFORTS: readonly { id: string; label: string; note: string }[] = [
   { id: 'max', label: 'max', note: 'The slowest and most expensive tier, untested for this tool.' },
 ];
 
-/** The Codex tiers. None has been A/B'd for this tool yet, and the notes say so. */
+/**
+ * The Codex tiers. Only medium and high have been compared for this tool, and
+ * only on gpt-5.6-sol - so both notes name the model they were measured on.
+ * The note is displayed as-is under whichever model is selected, which since
+ * gpt-6-astra became the default means the reader is normally looking at a
+ * result from a model they have not chosen.
+ */
 const CODEX_EFFORTS: readonly { id: string; label: string; note: string }[] = [
   // The API also takes `none` (skip reasoning entirely); deliberately not
   // offered — someone would pick it, and an advisory answer with no reasoning
@@ -53,12 +59,12 @@ const CODEX_EFFORTS: readonly { id: string; label: string; note: string }[] = [
   {
     id: 'medium',
     label: 'medium (recommended)',
-    note: 'Good and fast enough: side by side with high it made the same equips with the same socket fills, capped every resistance, and finished four minutes sooner on half the reasoning — and its first draft was the cleaner of the two.',
+    note: 'Good and fast enough. Measured on gpt-5.6-sol, the only model here that has been compared: side by side with high it made the same equips with the same socket fills, capped every resistance, and finished four minutes sooner on half the reasoning, and its first draft was the cleaner of the two.',
   },
   {
     id: 'high',
     label: 'high',
-    note: 'In the side-by-side it spent 2.5× the reasoning re-shuffling which of the same augments goes on which slot, for the same capped resistances — and still left one bag item without a verdict on the first pass.',
+    note: 'The other half of that gpt-5.6-sol comparison: high spent 2.5× the reasoning re-shuffling which of the same augments goes on which slot, for the same capped resistances, and still left one bag item without a verdict on the first pass. Nothing has been measured on the other models here.',
   },
   { id: 'xhigh', label: 'xhigh', note: 'Extended reasoning for the hardest problems, untested for this tool.' },
   { id: 'max', label: 'max', note: 'Deeper still, untested for this tool.' },
@@ -132,12 +138,17 @@ const BACKENDS: readonly {
     label: 'OpenAI (ChatGPT subscription)',
     note: 'Runs the `codex` command and bills through the ChatGPT subscription it is signed into — run `codex login` once if it is not.',
     command: 'codex',
-    // gpt-5.6-sol first: it is the provider's default, and the pane's
+    // gpt-6-astra first: it is the provider's default, and the pane's
     // "Default (…)" line reads the first entry. The 5.4-and-older generations
     // the CLI still lists are deliberately left out of the picker; a
     // hand-edited settings.json can still name one and a run honours it.
     models: [
-      { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol (recommended)' },
+      // GPT-6, and the default since 2026-09-05. The roster gives it every tier
+      // this backend offers, ultra included, so it needs no `tiers` line.
+      { id: 'gpt-6-astra', label: 'gpt-6-astra (recommended)' },
+      // The previous default, and the model the effort A/B was actually run on
+      // - which is what the medium and high notes below are describing.
+      { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
       { id: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
       { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna', tiers: ['low', 'medium', 'high', 'xhigh', 'max'] },
       { id: 'gpt-5.5', label: 'gpt-5.5', tiers: ['low', 'medium', 'high', 'xhigh'] },
