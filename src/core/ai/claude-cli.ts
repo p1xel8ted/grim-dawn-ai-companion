@@ -9,12 +9,23 @@
  *   inherits whatever the user's interactive session or settings happen to say,
  *   which makes two runs of `advise` on the same save silently incomparable.
  * - The document goes over **stdin**: at ~36k tokens it is far past ARG_MAX.
+ * - The persona goes in a **file**, via `--system-prompt-file`. Passed inline it
+ *   was ~33k characters against a Windows command line that stops at 32,767
+ *   including the executable path, so `prompt.ts` growing by a paragraph turned
+ *   every run into `spawn ENAMETOOLONG`. Nothing on this command line may grow
+ *   with the persona, the dossier or the question again; `test/ai.test.ts`
+ *   checks that for both backends, because scoping the same fix to codex alone
+ *   is how it happened here a second time.
  * - `--tools ""` makes this a pure one-shot completion; `--no-session-persistence`
  *   keeps it out of the user's session history.
  * - `cwd` is the temp directory, so the subprocess does not pick up this repo's
  *   CLAUDE.md or any other project context.
  * - **Never `--bare`** — it disables exactly the OAuth/keychain auth this depends on.
  */
+
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { ADVISOR_SYSTEM_PROMPT, buildUserTurn } from './prompt.js';
 import {
@@ -119,95 +130,109 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
     },
 
     async advise(req: AdvisorRequest, signal?: AbortSignal, onActivity?: ActivityListener): Promise<AdvisorResult> {
-      const args = [
-        '-p',
-        // `stream-json` rather than `json`, for one reason: a run is eight to
-        // twelve minutes and the plain envelope arrives all at once at the end,
-        // so there is nothing to show in between and no way to tell a working
-        // call from a wedged one. The *last* line of a stream is the identical
-        // `type: "result"` envelope, so this costs the parser nothing — see
-        // `envelopeFrom`. `--verbose` is required by the CLI for this format.
-        '--output-format',
-        'stream-json',
-        '--include-partial-messages',
-        '--verbose',
-        '--model',
-        model,
-        '--effort',
-        effort,
-        '--tools',
-        '',
-        '--no-session-persistence',
-        '--system-prompt',
-        systemPrompt,
-      ];
+      // The persona is written out and named, never passed inline: at ~33k
+      // characters it does not fit on a Windows command line. Its own directory,
+      // so the name cannot collide with a concurrent run — the repair loop is a
+      // second call — and so cleanup is one `rm` whatever happened.
+      const dir = await mkdtemp(join(tmpdir(), 'gd-advisor-'));
+      const personaPath = join(dir, 'system-prompt.md');
+      try {
+        await writeFile(personaPath, systemPrompt, 'utf8');
+        const args = [
+          '-p',
+          // `stream-json` rather than `json`, for one reason: a run is eight to
+          // twelve minutes and the plain envelope arrives all at once at the end,
+          // so there is nothing to show in between and no way to tell a working
+          // call from a wedged one. The *last* line of a stream is the identical
+          // `type: "result"` envelope, so this costs the parser nothing — see
+          // `envelopeFrom`. `--verbose` is required by the CLI for this format.
+          '--output-format',
+          'stream-json',
+          '--include-partial-messages',
+          '--verbose',
+          '--model',
+          model,
+          '--effort',
+          effort,
+          '--tools',
+          '',
+          '--no-session-persistence',
+          '--system-prompt-file',
+          personaPath,
+        ];
 
-      // What the reasoning cost, for `usage` — an effort A/B reads it from the
-      // stored envelope to see *where* a cheaper run saved its tokens. Two
-      // sources, authoritative first: the final `message_delta`'s usage carries
-      // `output_tokens_details.thinking_tokens` (observed 106 where the running
-      // estimate said 130), and the `thinking_tokens` estimate events — which a
-      // live medium-effort run turned out not to emit at all — are the fallback,
-      // sampled off the last `thinking` delta they rode in on.
-      let reportedThinking: number | undefined;
-      let estimatedThinking: number | undefined;
-      const track: ActivityListener = (activity) => {
-        if (activity.kind === 'thinking' && activity.outputTokens !== undefined) {
-          estimatedThinking = activity.outputTokens;
+        // What the reasoning cost, for `usage` — an effort A/B reads it from the
+        // stored envelope to see *where* a cheaper run saved its tokens. Two
+        // sources, authoritative first: the final `message_delta`'s usage carries
+        // `output_tokens_details.thinking_tokens` (observed 106 where the running
+        // estimate said 130), and the `thinking_tokens` estimate events — which a
+        // live medium-effort run turned out not to emit at all — are the fallback,
+        // sampled off the last `thinking` delta they rode in on.
+        let reportedThinking: number | undefined;
+        let estimatedThinking: number | undefined;
+        const track: ActivityListener = (activity) => {
+          if (activity.kind === 'thinking' && activity.outputTokens !== undefined) {
+            estimatedThinking = activity.outputTokens;
+          }
+          onActivity?.(activity);
+        };
+
+        const readActivity = activityReader(track, (n) => {
+          reportedThinking = n;
+        });
+        const proc = await run(
+          args,
+          buildUserTurn(req.contextDoc, req.question, req.planOnly),
+          timeoutMs,
+          signal,
+          readActivity,
+        );
+        const thinkingTokens = reportedThinking ?? estimatedThinking;
+
+        if (proc.timedOut) {
+          throw new Error(
+            `claude CLI timed out after ${Math.round(timeoutMs / 1000)}s — raise the timeout, or lower --effort`,
+          );
         }
-        onActivity?.(activity);
-      };
+        if (proc.code !== 0) {
+          throw new Error(`claude CLI exited ${proc.code ?? 'by signal'}${stderrTail(proc.stderr)}`);
+        }
 
-      const readActivity = activityReader(track, (n) => {
-        reportedThinking = n;
-      });
-      const proc = await run(
-        args,
-        buildUserTurn(req.contextDoc, req.question, req.planOnly),
-        timeoutMs,
-        signal,
-        readActivity,
-      );
-      const thinkingTokens = reportedThinking ?? estimatedThinking;
+        const envelope = envelopeFrom(proc.stdout);
+        if (!envelope) {
+          throw new Error(
+            `claude CLI did not return JSON — stdout began: ${JSON.stringify(proc.stdout.slice(0, 200))}`,
+          );
+        }
+        if (envelope.is_error || typeof envelope.result !== 'string') {
+          const detail = typeof envelope.result === 'string' ? envelope.result : (envelope.subtype ?? 'no result field');
+          throw new Error(`claude CLI reported an error — ${detail}${stderrTail(proc.stderr)}`);
+        }
 
-      if (proc.timedOut) {
-        throw new Error(
-          `claude CLI timed out after ${Math.round(timeoutMs / 1000)}s — raise the timeout, or lower --effort`,
-        );
+        const input = inputTokens(envelope.usage);
+        const usage = {
+          ...(input !== undefined ? { inputTokens: input } : {}),
+          ...(envelope.usage?.output_tokens !== undefined ? { outputTokens: envelope.usage.output_tokens } : {}),
+          ...(thinkingTokens !== undefined ? { thinkingTokens } : {}),
+          ...(envelope.total_cost_usd !== undefined ? { costUsd: envelope.total_cost_usd } : {}),
+          ...(envelope.duration_ms !== undefined ? { durationMs: envelope.duration_ms } : {}),
+        };
+        const structured = parseAdvice(envelope.result);
+
+        return {
+          text: envelope.result,
+          provider: CLAUDE_CLI_ID,
+          model,
+          effort,
+          ...(structured ? { structured } : {}),
+          ...(Object.keys(usage).length ? { usage } : {}),
+        };
+      } finally {
+        // Everything from the write to the run settling is inside the try, so a
+        // failed write and a spawn that throws before there is a child both
+        // clean up too. The file has to outlive the spawn: the CLI reads it.
+        await rm(dir, { recursive: true, force: true });
       }
-      if (proc.code !== 0) {
-        throw new Error(`claude CLI exited ${proc.code ?? 'by signal'}${stderrTail(proc.stderr)}`);
-      }
-
-      const envelope = envelopeFrom(proc.stdout);
-      if (!envelope) {
-        throw new Error(
-          `claude CLI did not return JSON — stdout began: ${JSON.stringify(proc.stdout.slice(0, 200))}`,
-        );
-      }
-      if (envelope.is_error || typeof envelope.result !== 'string') {
-        const detail = typeof envelope.result === 'string' ? envelope.result : (envelope.subtype ?? 'no result field');
-        throw new Error(`claude CLI reported an error — ${detail}${stderrTail(proc.stderr)}`);
-      }
-
-      const input = inputTokens(envelope.usage);
-      const usage = {
-        ...(input !== undefined ? { inputTokens: input } : {}),
-        ...(envelope.usage?.output_tokens !== undefined ? { outputTokens: envelope.usage.output_tokens } : {}),
-        ...(thinkingTokens !== undefined ? { thinkingTokens } : {}),
-        ...(envelope.total_cost_usd !== undefined ? { costUsd: envelope.total_cost_usd } : {}),
-        ...(envelope.duration_ms !== undefined ? { durationMs: envelope.duration_ms } : {}),
-      };
-      const structured = parseAdvice(envelope.result);
-
-      return {
-        text: envelope.result,
-        provider: CLAUDE_CLI_ID,
-        model,
-        effort,
-        ...(structured ? { structured } : {}),
-        ...(Object.keys(usage).length ? { usage } : {}),
-      };
     },
   };
 }

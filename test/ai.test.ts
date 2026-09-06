@@ -10,8 +10,10 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
+import { dirname } from 'node:path';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
@@ -20,6 +22,7 @@ import {
   CANNED_ANSWER,
   adviseWithRepair,
   ambiguousStats,
+  buildUserTurn,
   checkPlan,
   createClaudeCliProvider,
   createCodexCliProvider,
@@ -105,6 +108,16 @@ function fakeSpawn(respond: (run: FakeRun, child: FakeChild) => void): FakeSpawn
     return child as unknown as ChildProcess;
   };
   return { fn, runs };
+}
+
+/**
+ * Where the persona was written, out of an argument list — or `undefined` when
+ * the flag is not there at all, which must read as a failure rather than
+ * silently picking up whatever `args[0]` happens to be.
+ */
+function personaFileArg(args: readonly string[]): string | undefined {
+  const at = args.indexOf('--system-prompt-file');
+  return at === -1 ? undefined : args[at + 1];
 }
 
 /** The success shape of `claude -p --output-format json`, as of v2.1.220. */
@@ -273,7 +286,13 @@ describe('parseAdvice', () => {
 
 describe('claude-cli provider', () => {
   it('assembles the verified invocation and sends the document over stdin', async () => {
-    const spawn = fakeSpawn((_run, child) => finish(child, envelope(CANNED_ANSWER)));
+    let personaPath: string | undefined;
+    let persona = '';
+    const spawn = fakeSpawn((run, child) => {
+      personaPath = personaFileArg(run.args);
+      persona = personaPath ? readFileSync(personaPath, 'utf8') : '';
+      finish(child, envelope(CANNED_ANSWER));
+    });
     const provider = createClaudeCliProvider({ spawn: spawn.fn });
 
     const result = await provider.advise({ contextDoc: '# Dossier\n\nbody' });
@@ -296,13 +315,16 @@ describe('claude-cli provider', () => {
       '--tools',
       '',
       '--no-session-persistence',
-      '--system-prompt',
-      ADVISOR_SYSTEM_PROMPT,
+      // The persona travels in a file, never as an argument: at ~33k characters
+      // it is past the 32,767 a whole Windows command line can hold.
+      '--system-prompt-file',
+      personaPath!,
     ]);
     // --bare would disable the subscription OAuth this depends on.
     expect(run.args).not.toContain('--bare');
     expect(run.options.cwd).toBe(tmpdir());
     expect(run.stdin).toBe('# Dossier\n\nbody');
+    expect(persona).toBe(ADVISOR_SYSTEM_PROMPT);
 
     expect(result.text).toBe(CANNED_ANSWER);
     expect(result.provider).toBe('claude-cli');
@@ -315,6 +337,88 @@ describe('claude-cli provider', () => {
       costUsd: 0.42,
       durationMs: 12_345,
     });
+  });
+
+  it('keeps the persona off the command line, however long it gets', async () => {
+    // This is the bug twice over. The persona was the `--system-prompt`
+    // argument at ~33k characters, against a Windows command line that stops at
+    // 32,767 including the executable path, so a routine wording change in
+    // `prompt.ts` was enough to turn every run into `spawn ENAMETOOLONG`. The
+    // codex backend was fixed for exactly this and the fix was scoped to codex,
+    // which is why it happened a second time here. So: nothing on either
+    // backend's command line may grow with the persona, the dossier or the
+    // question — measured against the real invocation rather than trusted.
+    const capture = async (persona: string, doc: string, question: string) => {
+      let delivered = '';
+      let failure: unknown;
+      const spawn = fakeSpawn((run, child) => {
+        try {
+          delivered = readFileSync(personaFileArg(run.args)!, 'utf8');
+        } catch (err) {
+          failure = err;
+        }
+        finish(child, envelope('ok'));
+      });
+      await createClaudeCliProvider({ spawn: spawn.fn, systemPrompt: persona }).advise({
+        contextDoc: doc,
+        question,
+      });
+      const run = spawn.runs[0]!;
+      const at = run.args.indexOf('--system-prompt-file');
+      // The generated path is the one argument that legitimately differs
+      // between two runs, so it is the only thing normalized away. A ceiling on
+      // each element's length would be the wrong check: a real Windows temp
+      // path can be long, and a fix that truncated the persona would pass it.
+      const args = [...run.args.slice(0, at + 1), '<persona file>', ...run.args.slice(at + 2)];
+      return { args, delivered, stdin: run.stdin, failure };
+    };
+
+    const small = await capture('P', 'D', 'Q');
+    const large = await capture('P'.repeat(200_000), 'D'.repeat(200_000), 'Q'.repeat(5_000));
+
+    expect(small.failure).toBeUndefined();
+    expect(large.failure).toBeUndefined();
+    expect(large.args).toEqual(small.args);
+    // …and the whole payload really did arrive by the roads it was moved to.
+    // Byte for byte, not by length: a fix that dropped the question or truncated
+    // the persona would satisfy a size check and lose the reader's actual words.
+    expect(small.delivered).toBe('P');
+    expect(large.delivered).toBe('P'.repeat(200_000));
+    expect(small.stdin).toBe(buildUserTurn('D', 'Q'));
+    expect(large.stdin).toBe(buildUserTurn('D'.repeat(200_000), 'Q'.repeat(5_000)));
+  });
+
+  it('removes the persona file once the run has settled', async () => {
+    let path = '';
+    const spawn = fakeSpawn((run, child) => {
+      path = personaFileArg(run.args) ?? '';
+      finish(child, envelope('ok'));
+    });
+    await createClaudeCliProvider({ spawn: spawn.fn }).advise({ contextDoc: 'doc' });
+
+    expect(path).not.toBe('');
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(dirname(path))).toBe(false);
+  });
+
+  it('removes the persona file when the spawn itself fails', async () => {
+    // A run is two calls with the repair loop, and a window left open for an
+    // evening makes many: a persona that only gets cleaned up on the happy path
+    // leaves 33k in the temp directory for every failure.
+    let path = '';
+    const enoent: SpawnFn = (_binary, args) => {
+      path = personaFileArg(args) ?? '';
+      const err = new Error('spawn claude ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    };
+    await expect(
+      createClaudeCliProvider({ spawn: enoent }).advise({ contextDoc: 'doc' }),
+    ).rejects.toThrow(/install Claude Code/);
+
+    expect(path).not.toBe('');
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(dirname(path))).toBe(false);
   });
 
   /**
@@ -705,22 +809,40 @@ describe('codex-cli provider', () => {
     expect(exec.stdin).toContain('why?');
   });
 
-  it('keeps the command line short enough to spawn on Windows', async () => {
-    // The persona used to be the prompt argument. At ~32k characters against a
-    // Windows command line that stops at ~32,767 including the executable path,
-    // the feature ran a few hundred characters from `spawn ENAMETOOLONG`, and a
-    // routine wording change pushed it over. Nothing on the command line may
-    // grow with the prompt or the dossier again, so this measures the real
-    // invocation with a large dossier rather than trusting the shape of it.
-    const spawn = fakeCodex((_run, child) => finish(child, codexStream('ok')));
-    const provider = createCodexCliProvider({ spawn: spawn.fn });
-    await provider.advise({ contextDoc: 'D'.repeat(200_000), question: 'Q'.repeat(5_000) });
+  it('keeps the persona off the command line, however long it gets', async () => {
+    // The twin of the claude guard, and the older half of the same bug: the
+    // persona was codex's prompt *argument* at ~32k characters against a Windows
+    // command line that stops at 32,767 including the executable path, so a
+    // routine wording change turned every run into `spawn ENAMETOOLONG`. The
+    // invariant is one invariant across both backends - nothing on either
+    // command line may grow with the persona, the dossier or the question, and
+    // all three must survive the transport intact.
+    const capture = async (persona: string, doc: string, question: string) => {
+      const spawn = fakeCodex((_run, child) => finish(child, codexStream('ok')));
+      await createCodexCliProvider({ spawn: spawn.fn, systemPrompt: persona }).advise({
+        contextDoc: doc,
+        question,
+      });
+      const exec = spawn.runs.find((r) => r.args[0] === 'exec')!;
+      return { args: exec.args, stdin: exec.stdin };
+    };
 
-    const exec = spawn.runs.find((r) => r.args[0] === 'exec')!;
-    expect(exec.args.join(' ').length).toBeLessThan(1_000);
-    expect(exec.args.some((a) => a.includes(ADVISOR_SYSTEM_PROMPT))).toBe(false);
-    // The big payload really did go somewhere: stdin.
-    expect(exec.stdin.length).toBeGreaterThan(200_000);
+    const small = await capture('P', 'D', 'Q');
+    const large = await capture('P'.repeat(200_000), 'D'.repeat(200_000), 'Q'.repeat(5_000));
+
+    // Nothing generated varies between the two, so the argv compares whole -
+    // codex needs no path normalized away, unlike claude's persona file.
+    expect(large.args).toEqual(small.args);
+    // `-` is codex's own "read the instructions from stdin", and it stays last.
+    expect(large.args[large.args.length - 1]).toBe('-');
+    // Byte for byte. A ceiling on the command line's length would pass a
+    // reintroduced inline persona that happened to sit under it.
+    expect(small.stdin).toBe(`P
+
+${buildUserTurn('D', 'Q')}`);
+    expect(large.stdin).toBe(`${'P'.repeat(200_000)}
+
+${buildUserTurn('D'.repeat(200_000), 'Q'.repeat(5_000))}`);
   });
 
   it('fast mode can be declined', async () => {
