@@ -70,6 +70,8 @@ import {
   allocatedDevotions,
   atRank,
   classify,
+  heldWeaponTokens,
+  weaponEligible,
   dualWieldFlag,
   effectiveRanks,
   emptyBonuses,
@@ -724,6 +726,13 @@ export function aggregateCharacter(
   const slots = equippedSlots(save, db);
   const gear = contributions(slots, db);
   const wielding = wieldingSummary(slots, save, db);
+  // What the hands are holding, in the tokens a skill's weapon requirement is
+  // written in. A restricted skill or devotion star is switched off by the game
+  // without one of them, so it must not reach the fold below.
+  const held = heldWeaponTokens([
+    slots.find((s) => s.slot === 'Main hand')?.item.base?.slot,
+    slots.find((s) => s.slot === 'Off hand')?.item.base?.slot,
+  ]);
 
   // Ranks first: every skill row below is read at the rank the *current* gear
   // puts the skill at, so the two halves of the aggregate agree with each other.
@@ -836,19 +845,29 @@ export function aggregateCharacter(
     // plain passive, so asking the buff would call every aura "always on".
     const toggle = /Toggled/.test(skill.class) || /Toggled/.test(stats.class);
     const { band, reason } = classify(skill, db);
+    // A granted skill that names the weapons it needs is inert without one, the
+    // same as an invested one — decided before `counted` so the row says so
+    // rather than claiming a buff the character is not getting.
+    const eligible = weaponEligible(skill, db, held);
     // Every granting part counts, including a second copy of the same one:
     // two Vicious Spikes are two buffs, and so are two Coldstones. That is
     // the opposite of the set-bonus rule, where a duplicate member adds
     // nothing — both are in-game facts, neither is in the data.
-    const counted = band === 'permanent' || band === 'maintainable';
+    const counted = eligible && (band === 'permanent' || band === 'maintainable');
     grantedSkills.push({
       item: g.part,
       skill: g.name,
       counted,
-      activation: counted ? (toggle ? 'toggle' : 'always on') : (reason ?? 'cast or triggered'),
+      activation: counted
+        ? toggle
+          ? 'toggle'
+          : 'always on'
+        : eligible
+          ? (reason ?? 'cast or triggered')
+          : 'needs a weapon this loadout does not hold',
     });
     if (!counted) {
-      excludedReasons.add(reason ?? 'grantedActive');
+      excludedReasons.add(eligible ? (reason ?? 'grantedActive') : 'weaponRestricted');
       continue;
     }
     // A toggle's energy reservation is the cost of having it on, and the one
@@ -905,6 +924,13 @@ export function aggregateCharacter(
       if (reason) excludedReasons.add(reason);
       continue;
     }
+    // Only the bands that reach the global fold. The attack band keeps its own
+    // rows either way — what a restricted attack skill does when its weapon is
+    // gone is a separate question from what the character sheet totals.
+    if (!weaponEligible(skill, db, held)) {
+      excludedReasons.add('weaponRestricted');
+      continue;
+    }
 
     const stats = statRecord(skill, db);
     const rank = ranks.get(entry.record)?.effective ?? entry.level;
@@ -935,6 +961,12 @@ export function aggregateCharacter(
     const { band, reason } = classify(skill, db);
     if (band !== 'permanent') {
       if (reason) excludedReasons.add(reason);
+      continue;
+    }
+    // Kraken's five stars all require a two-hander; the constellation is still
+    // allocated without one, and contributes nothing.
+    if (!weaponEligible(skill, db, held)) {
+      excludedReasons.add('weaponRestricted');
       continue;
     }
     const name = skillLabel(skill, db);
@@ -1667,7 +1699,13 @@ function exclusionList(reasons: Set<string>): string[] {
     'attack and retaliation damage, which depend on what is being hit',
     'permanent global conversions are folded into the flat damage figures; skill-scoped conversion is listed on the skill it converts and folded nowhere',
     'flat damage figures are min–max midpoints, and gear flat damage reaches skills only through their % weapon damage — the weapon-attack composition is what it describes',
-    'affix values are the record’s base numbers; the engine rolls each within its jitter',
+    // The old wording named affixes only, and a reader took the base item's own
+    // lines for exact. They are not: a live Cesarin's Conviction shows +15%
+    // Attack Speed where its record contributes 18. The tool does not
+    // reconstruct any instance's roll, so say that about every stat it sums
+    // rather than about affixes alone — and without claiming every stat rolls,
+    // or that a record value is the middle of a band.
+    'base-item and affix stats use the database record values, not reconstructed individual rolls; an item’s actual values can differ, so the totals and every swap projection inherit that difference',
     // The resistance matrix bands maintainable buffs separately; everything
     // else here is a permanent-sources sum, and saying so beats letting a
     // reader assume the buff's damage bonus is already in the ranking.

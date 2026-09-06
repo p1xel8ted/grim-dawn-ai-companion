@@ -5,6 +5,7 @@ import {
   buildContextDoc,
   DEFAULT_MAX_TOKENS,
   devotionBindings,
+  renderSpeedBlock,
   throughputParts,
   type ContextInput,
 } from '../src/core/context/builder.js';
@@ -12,7 +13,7 @@ import type { PlanProjection } from '../src/core/ai/envelope.js';
 import { damageIdentity, equipGroup, estimateTokens, selectCandidates } from '../src/core/context/filters.js';
 import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
 import type { DbItem, DbSkill, GameDb } from '@grimdawn/core/db/types';
-import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
+import { aggregateCharacter, type SpeedLine, type SpeedSummary } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
 import { ambiguousStats } from '../src/core/ai/verify.js';
 import { skillLabel } from '../src/core/mechanics/skills.js';
@@ -1499,5 +1500,104 @@ describe.skipIf(!canRunFixture)(
 
     // An item gated on two thresholds appears under both and says so.
     expect(twelve).toMatch(/also needs (level \d+|\d+ points? into)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The attack-speed row, and what the document is allowed to conclude from it
+// ---------------------------------------------------------------------------
+
+/**
+ * The attack figures do not reproduce the game: on a live 2H Savagery build the
+ * document read 142.1% / 1.78 attacks per second where the game read 137% /
+ * 1.86. Two causes are known and neither is fixed - the percentage and the rate
+ * are derived from one another against the player record's baseline and the
+ * game appears to normalise differently, and `+% Attack Speed` on a modifier
+ * node of a charge-stacking attack skill never reaches the total at all. Until
+ * that is settled the row may still be printed, but nothing downstream may read
+ * "at cap" off it as a fact - that is the sentence that tells a reader to stop
+ * buying attack speed. Casting and movement are not in doubt and keep their
+ * definite wording, which is what these cases pin apart.
+ */
+describe('the speed block', () => {
+  const line = (over: Partial<SpeedLine> = {}): SpeedLine => ({
+    label: 'Attack',
+    base: 1.25,
+    weaponBase: 1.07,
+    permanentPercent: 62,
+    maintainablePercent: 25,
+    cap: 200,
+    percent: 138.7,
+    percentWithMaintainable: 160.4,
+    rawPercent: 138.7,
+    rawPercentWithMaintainable: 160.4,
+    rate: 1.73,
+    rateWithMaintainable: 2.0,
+    headroom: 47,
+    ...over,
+  });
+
+  const summary = (attack: SpeedLine, cast: SpeedLine): SpeedSummary => ({
+    attack,
+    cast,
+    movement: line({ label: 'Movement', base: 0.93, weaponBase: 0.93, cap: 135, percent: 120, percentWithMaintainable: 120, rawPercent: 120, rawPercentWithMaintainable: 120, rate: 1.12, rateWithMaintainable: 1.12, headroom: 20 }),
+    weapons: [],
+    totalSpeedPercent: { permanent: 0, maintainable: 0 },
+  });
+
+  const CAPPED = line({ percent: 200, percentWithMaintainable: 200, rawPercent: 205, rawPercentWithMaintainable: 214, rate: 2.5, rateWithMaintainable: 2.5, headroom: 0 });
+  const UNDER_CAP = line();
+  const CAST_CAPPED = line({ label: 'Casting', weaponBase: 1.25, percent: 200, percentWithMaintainable: 200, rawPercent: 208, rawPercentWithMaintainable: 212, rate: 2.5, rateWithMaintainable: 2.5, headroom: 0 });
+  const CAST_UNDER = line({ label: 'Casting', weaponBase: 1.25 });
+
+  it('does not tell the reader that a capped attack speed is worthless', () => {
+    const md = renderSpeedBlock(summary(CAPPED, CAST_UNDER));
+
+    // The two sentences that turn an estimate into an instruction.
+    expect(md).not.toContain('every further `+% Attack Speed` is worth nothing');
+    expect(md).not.toContain('**Attack speed is capped**');
+    expect(md).toContain('**Attack speed reads as capped, and that reading is not safe to act on**');
+    // The ceiling is a game record; it is the figure held against it that is
+    // modelled, and saying so is what keeps "uncertain" off the cap value.
+    expect(md).toContain('The ceiling is a game record and is not in question');
+    // The omitted contribution is an omission, not a measured shortfall - its
+    // uptime and charge scaling are exactly what was never established, so
+    // nothing here may claim the total is low.
+    expect(md).not.toMatch(/understated|higher rather than lower/);
+    expect(md).toContain('Do not treat further `+% Attack Speed` as worthless');
+  });
+
+  it('keeps the definite cap wording for casting, which is not in doubt', () => {
+    const md = renderSpeedBlock(summary(UNDER_CAP, CAST_CAPPED));
+
+    expect(md).toContain('**Casting speed is capped**');
+    expect(md).toContain('every further `+% Casting Speed` is worth nothing');
+    expect(md).toContain('costs nothing either');
+    // …and says nothing about the attack line being capped, since it is not.
+    expect(md).not.toContain('Attack speed reads as capped');
+  });
+
+  it('marks the attack row as an estimate whether it is over the cap or under it', () => {
+    const over = renderSpeedBlock(summary(CAPPED, CAST_UNDER));
+    const under = renderSpeedBlock(summary(UNDER_CAP, CAST_UNDER));
+
+    expect(over).toContain('**at cap on this estimate**');
+    expect(over).not.toContain('points already wasted');
+    expect(under).toContain("more points of `+%` (estimate)");
+    for (const md of [over, under]) {
+      expect(md).toContain('the whole attack row is an estimate');
+      expect(md).toContain('left out of the total');
+      expect(md).toContain('neither its uptime nor its charge scaling established');
+    }
+  });
+
+  it('leaves the casting and movement headroom cells unmarked', () => {
+    const md = renderSpeedBlock(summary(UNDER_CAP, CAST_UNDER));
+    const row = (label: string): string =>
+      md.split(/\r?\n/).find((l) => l.startsWith(`| ${label} `)) ?? '';
+
+    expect(row('Attack')).toContain('(estimate)');
+    expect(row('Casting')).not.toContain('(estimate)');
+    expect(row('Movement')).not.toContain('(estimate)');
   });
 });

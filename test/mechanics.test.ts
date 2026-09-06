@@ -848,7 +848,12 @@ describe('resistanceMatrix', () => {
     // Item-granted *conditional* skills are the exclusion; an always-on one is
     // counted on its own row, and the sentence has to say which is which.
     expect(aggregate.exclusions.join('\n')).toMatch(/item-granted procs, activated skills and pet skills/);
-    expect(aggregate.exclusions.join('\n')).toMatch(/jitter/);
+    // The record-vs-instance caveat has to reach the **base item**, not only
+    // its affixes: a live Cesarin's Conviction shows +15% Attack Speed where
+    // its record contributes 18, and the old sentence said "affix values" and
+    // left a reader taking the base lines for exact.
+    expect(aggregate.exclusions.join('\n')).toMatch(/base-item and affix stats use the database record values/);
+    expect(aggregate.exclusions.join('\n')).toMatch(/not reconstructed individual rolls/);
   });
 });
 
@@ -1124,10 +1129,14 @@ describe.skipIf(!haveGameInstall())(`mechanics vs the game (${haveGameInstall() 
   it('exposes the weapon whitelist that build-defining attacks carry', { timeout: TIMEOUT }, async () => {
     const db = await gameDb();
     // Savage Strike is two-handed only; recommending a one-hander would disable it.
+    // The spear entry is `Spear2h` — its record sets that and leaves `Spear` at
+    // zero, and reading the short name dropped every spear restriction in the
+    // game. This list used to be four long and was wrong by one.
     expect(db.getSkill('records/skills/playerclass06/savagestrike1.dbr')?.weapons).toEqual([
       'Axe2h',
       'Mace2h',
       'Ranged2h',
+      'Spear2h',
       'Sword2h',
     ]);
     // Aether Ray needs a caster off-hand, which is a different kind of trap.
@@ -1907,3 +1916,158 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// Weapon requirements gate what the aggregate counts
+// ---------------------------------------------------------------------------
+
+/**
+ * A skill or devotion star that names the weapons it needs is switched off by
+ * the game without one. Kraken's five stars all read "Requires a two-handed
+ * melee or two-handed ranged weapon", and the tool used to count them behind a
+ * dagger or bare hands: a live save with both weapon sets emptied still carried
+ * their +26% attack speed, +15% crit damage and +4% Physical Resistance. The
+ * data was always there - `DbSkill.weapons` - and only the reporting list read
+ * it. These cases pin the gate on every path into the global fold and, just as
+ * much, pin what it must not touch.
+ */
+describe('weapon-restricted sources', () => {
+  const TWO_HANDER = 'records/items/gearweapons/melee2h/sword2h.dbr';
+  const ONE_HANDER = 'records/items/gearweapons/melee1h/sword.dbr';
+  const SHIELD = 'records/items/gearweapons/shields/shield.dbr';
+  const SPEAR = 'records/items/gearweapons/melee2h/spear2h.dbr';
+  const GLOVES = 'records/items/gearhands/gloves.dbr';
+  const GATED = 'records/skills/devotion/gated.dbr';
+  const SHIELD_SKILL = 'records/skills/playerclass01/shieldpassive1.dbr';
+  const OPEN = 'records/skills/playerclass01/openpassive1.dbr';
+  const GRANTED = 'records/skills/itemskills/grantedgated.dbr';
+
+  const db = stubDb({
+    items: {
+      [TWO_HANDER]: item(TWO_HANDER, { name: 'Two-hander', slot: 'WeaponMelee_Sword2h' }),
+      [ONE_HANDER]: item(ONE_HANDER, { name: 'One-hander', slot: 'WeaponMelee_Sword' }),
+      [SHIELD]: item(SHIELD, { name: 'Shield', slot: 'WeaponArmor_Shield' }),
+      [SPEAR]: item(SPEAR, { name: 'Spear', slot: 'WeaponMelee_Spear2h' }),
+      [GLOVES]: item(GLOVES, {
+        name: 'Gloves',
+        slot: 'ArmorProtective_Hands',
+        stats: { itemSkillName: GRANTED, itemSkillLevel: 1 },
+      }),
+    },
+    skills: {
+      // Kraken's shape: a two-hander-gated passive carrying speed and more.
+      [GATED]: skill(GATED, {
+        name: 'Gated Star',
+        weapons: ['Axe2h', 'Mace2h', 'Ranged2h', 'Spear2h', 'Sword2h'],
+        stats: { characterAttackSpeedModifier: 26, defensivePhysical: 4, characterLife: 500 },
+      }),
+      [SHIELD_SKILL]: skill(SHIELD_SKILL, {
+        name: 'Shield Passive',
+        weapons: ['Shield'],
+        stats: { characterAttackSpeedModifier: 7, defensiveFire: 10 },
+      }),
+      [OPEN]: skill(OPEN, { name: 'Open Passive', stats: { characterAttackSpeedModifier: 5, defensiveCold: 9 } }),
+      [GRANTED]: skill(GRANTED, {
+        name: 'Granted Gated',
+        weapons: ['Spear2h', 'Sword2h'],
+        stats: { characterAttackSpeedModifier: 11, defensiveAether: 12 },
+      }),
+    },
+    penalty: { Ultimate: {} },
+  });
+
+  const gloves = (): (EquippedItem | null)[] => {
+    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    equipment[4] = instance({ baseName: GLOVES });
+    return equipment;
+  };
+
+  const build = (hands: [EquippedItem | null, EquippedItem | null]) =>
+    aggregateCharacter(
+      save({
+        equipment: gloves(),
+        weaponSet1: hands,
+        skills: [characterSkill(OPEN, 1), characterSkill(SHIELD_SKILL, 1)],
+        devotions: [characterSkill(GATED, 1)],
+      }),
+      db,
+    );
+
+  const twoHanded = build([instance({ baseName: TWO_HANDER }), null]);
+  const unarmed = build([null, null]);
+  const oneHanded = build([instance({ baseName: ONE_HANDER }), null]);
+  const withShield = build([instance({ baseName: ONE_HANDER }), instance({ baseName: SHIELD })]);
+  const withSpear = build([instance({ baseName: SPEAR }), null]);
+
+  it('counts a two-hander-gated star, and its non-speed stats, while a two-hander is held', () => {
+    expect(twoHanded.speed.attack.permanentPercent).toBe(26 + 5 + 11);
+    expect(twoHanded.resistances.permanent.physical).toBe(4);
+    expect(twoHanded.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(true);
+  });
+
+  it('drops it unarmed, taking its speed and its resistance with it', () => {
+    expect(unarmed.speed.attack.permanentPercent).toBe(5);
+    expect(unarmed.resistances.permanent.physical ?? 0).toBe(0);
+    expect(unarmed.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(false);
+    // The unrestricted passive is untouched, which is the other half of the fix.
+    expect(unarmed.resistances.permanent.cold).toBe(9);
+  });
+
+  it('drops it for a one-hander too, since the requirement is the weapon and not the empty hand', () => {
+    expect(oneHanded.speed.attack.permanentPercent).toBe(5);
+    expect(oneHanded.resistances.permanent.physical ?? 0).toBe(0);
+  });
+
+  it('matches the class suffix exactly, so a Sword is not a Sword2h', () => {
+    // The one-hander's class is `WeaponMelee_Sword`. If the match were a prefix
+    // or a substring it would satisfy `Sword2h` and the gate would never bite.
+    expect(oneHanded.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(false);
+  });
+
+  it('lets an off-hand satisfy a requirement the main hand does not', () => {
+    // Shield Passive needs `Shield`, which is in the off hand; the gated star
+    // still fails, because a one-hander is not a two-hander.
+    expect(withShield.speed.attack.permanentPercent).toBe(5 + 7);
+    expect(withShield.resistances.permanent.fire).toBe(10);
+    expect(withShield.resistances.permanent.physical ?? 0).toBe(0);
+  });
+
+  it('gates an item-granted skill the same way, and reports it as not counted', () => {
+    const granted = (agg: typeof twoHanded) => agg.grantedSkills.find((g) => g.skill === 'Granted Gated');
+    expect(granted(twoHanded)?.counted).toBe(true);
+    expect(twoHanded.resistances.permanent.aether).toBe(12);
+
+    // The gloves are still worn, so the row has to stay and say why it is off —
+    // silently dropping it would read as the item no longer granting anything.
+    expect(granted(unarmed)?.counted).toBe(false);
+    expect(granted(unarmed)?.activation).toBe('needs a weapon this loadout does not hold');
+    expect(unarmed.resistances.permanent.aether ?? 0).toBe(0);
+  });
+
+  it('names the exclusion rather than dropping the sources silently', () => {
+    expect(unarmed.exclusions.join('\n')).toMatch(/name the weapons they need/);
+    // The two-handed loadout lists it too, because Shield Passive is gated
+    // there — the sentence tracks what this loadout cannot use, not the weapon.
+    expect(twoHanded.exclusions.join('\n')).toMatch(/name the weapons they need/);
+
+    // A loadout with nothing gated must not carry the sentence at all.
+    const nothingGated = aggregateCharacter(
+      save({ weaponSet1: [instance({ baseName: TWO_HANDER }), null], skills: [characterSkill(OPEN, 1)] }),
+      db,
+    );
+    expect(nothingGated.exclusions.join('\n')).not.toMatch(/name the weapons they need/);
+  });
+
+  it('accepts a two-handed spear, whose restriction token is Spear2h and not Spear', () => {
+    // The accepted-weapon vocabulary listed `Spear` and no record sets it; 92
+    // set `Spear2h`. Reading the short name made every spear restriction
+    // invisible, so switching this gate on would have taken the star off a
+    // spear user. Projections cover the same case in test/project.test.ts.
+    expect(withSpear.speed.attack.permanentPercent).toBe(26 + 5 + 11);
+    expect(withSpear.resistances.permanent.physical).toBe(4);
+    expect(withSpear.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(true);
+    // Shield Passive is still gated behind a spear, so the sentence stays —
+    // what must not happen is the star going with it.
+    expect(withSpear.resistances.permanent.fire ?? 0).toBe(0);
+  });
+});
