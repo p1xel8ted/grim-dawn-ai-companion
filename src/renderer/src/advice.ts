@@ -34,6 +34,11 @@ export interface SlotAdvice {
   verdict: string;
   /** The plan's own entry, which carries what the flattened row drops. */
   plan?: PlanVerdict;
+  /**
+   * The sockets this slot held when the run was written, which is what a fit is
+   * judged redundant against. Absent for a run stored before the record existed.
+   */
+  baseline?: SocketBaseline;
   /** True when the verdict actually replaces the item in the slot. */
   replaces: boolean;
   /** Display name of the proposed item, when there is one. */
@@ -108,7 +113,82 @@ export interface SocketMove {
  * actually argued for.
  */
 export function socketFits(advice: SlotAdvice | undefined): readonly SocketFit[] {
-  return advice?.plan?.fits ?? [];
+  const fits = advice?.plan?.fits ?? [];
+  // An EQUIP's fits describe the item arriving, and the recorded baseline is
+  // the one leaving, so they are not comparable. The caller judges those
+  // against the candidate itself, which is what will carry them.
+  if (advice?.verdict === 'EQUIP') return fits;
+  return actionableFits(advice?.verdict ?? '', fits, advice?.baseline);
+}
+
+/** A socketable as either side of a comparison happens to name it. */
+export interface SocketRef {
+  id?: string;
+  name?: string;
+}
+
+/** What a slot was carrying, per socket, when the run was written. */
+export interface SocketBaseline {
+  component?: SocketRef;
+  augment?: SocketRef;
+}
+
+/** The verdicts whose own word puts a component in the socket. */
+const COMPONENT_INSTALLS = new Set(['ADD-COMPONENT', 'SWAP-COMPONENT', 'CRAFT']);
+
+/**
+ * Whether two socketables are the same one.
+ *
+ * Ids settle it wherever both sides have one, and two different ids are two
+ * different socketables however they are labelled. A name only answers where an
+ * id is missing, which happens for something worn that the document never
+ * offered as a candidate. A missing name matches nothing, including another
+ * missing one.
+ */
+export function sameSocketable(a: SocketRef | undefined, b: SocketRef | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.id !== undefined && b.id !== undefined) return a.id === b.id;
+  return a.name !== undefined && a.name !== '' && a.name === b.name;
+}
+
+/**
+ * Does carrying this verdict out take the augment off?
+ *
+ * Replacing an installed component destroys the augment with it, so a fit that
+ * re-states the augment already there is the instruction to buy it again, not a
+ * no-op. `SWAP-COMPONENT` always does it - the projection clears the augment on
+ * that word alone - and any other verdict does it when it puts a *different*
+ * component where one already sits.
+ */
+function augmentComesOff(verdict: string, fits: readonly SocketFit[], baseline: SocketBaseline): boolean {
+  if (verdict === 'SWAP-COMPONENT') return true;
+  if (baseline.component === undefined) return false;
+  if (COMPONENT_INSTALLS.has(verdict)) return true;
+  return fits.some((f) => f.kind === 'component' && !sameSocketable(baseline.component, f));
+}
+
+/**
+ * The fits that actually ask the reader for something.
+ *
+ * A model may write `fits` as the slot's finished socket state rather than as
+ * the changes to make, and then most of the list names what is already in
+ * place. Rendering those as instructions marks gear as needing work it does not
+ * need. Judged against `baseline` - the sockets the run itself recorded, not
+ * today's - so acting on the plan cannot turn a dropped fit back into an
+ * instruction, and a slot the reader has since re-socketed still reads against
+ * what the plan was written about.
+ *
+ * Without a baseline nothing is dropped: a run stored before the socket record
+ * existed keeps every fit rather than having them guessed away.
+ */
+export function actionableFits(
+  verdict: string,
+  fits: readonly SocketFit[],
+  baseline: SocketBaseline | undefined,
+): readonly SocketFit[] {
+  if (fits.length === 0 || !baseline) return fits;
+  const off = augmentComesOff(verdict, fits, baseline);
+  return fits.filter((fit) => (fit.kind === 'augment' && off ? true : !sameSocketable(baseline[fit.kind], fit)));
 }
 
 export type SocketFit = NonNullable<PlanVerdict['fits']>[number];
@@ -126,12 +206,28 @@ export function adviceBySlot(envelope: AdviseEnvelope | null, activeSet: 1 | 2 =
   // key — `Main hand` joins the active set's main-hand row instead of nothing.
   for (const v of envelope?.plan?.verdicts ?? []) verdicts.set(verdictSlotKey(v.slot, activeSet), v);
 
+  // The recorded sockets, by the same key. A run stored before the record
+  // existed has none at all, which is different from a slot that carried
+  // nothing: the first keeps every fit, the second has nothing to match.
+  const recorded = envelope?.wornSockets;
+  const socketsByKey = new Map(Object.entries(recorded ?? {}).map(([slot, rec]) => [slotKey(slot), rec]));
+  const baselineFor = (key: string): SocketBaseline | undefined => {
+    if (!recorded) return undefined;
+    const rec = socketsByKey.get(key) ?? {};
+    return {
+      ...(rec.component ? { component: { id: rec.component } } : {}),
+      ...(rec.augment ? { augment: { id: rec.augment } } : {}),
+    };
+  };
+
   const out = new Map<string, SlotAdvice>();
   for (const row of envelope?.verdictRows ?? []) {
     const key = verdictSlotKey(row.slot, activeSet);
     const plan = verdicts.get(key);
+    const baseline = baselineFor(key);
     out.set(key, {
       row,
+      ...(baseline ? { baseline } : {}),
       verdict: plan?.verdict ?? '',
       ...(plan ? { plan } : {}),
       replaces: row.replaces,
@@ -293,6 +389,16 @@ export function loadoutDrift(
   const before = envelope?.worn;
   if (!before) return [];
   const socketsBefore = envelope.wornSockets ?? {};
+  // Recorded sockets by the key the verdicts join on, so a slot alias in the
+  // plan still finds what the run said that slot was carrying.
+  const beforeByKey = new Map(Object.entries(socketsBefore).map(([slot, rec]) => [slotKey(slot), rec]));
+  const driftBaseline = (k: string): SocketBaseline => {
+    const rec = beforeByKey.get(k) ?? {};
+    return {
+      ...(rec.component ? { component: { id: rec.component } } : {}),
+      ...(rec.augment ? { augment: { id: rec.augment } } : {}),
+    };
+  };
 
   // Everything the plan asked each slot to end up with, by the same slot key the
   // verdict table joins on — alias-aware on the verdict side, because the slot
@@ -315,12 +421,21 @@ export function loadoutDrift(
     if (row.replaces && row.nextId) at(verdictSlotKey(row.slot, activeSet)).itemId = row.nextId;
   }
   for (const v of envelope.plan?.verdicts ?? []) {
-    const entry = at(verdictSlotKey(v.slot, activeSet));
+    const vKey = verdictSlotKey(v.slot, activeSet);
+    const entry = at(vKey);
     if (SOCKET_VERDICTS.has(v.verdict) && v.targetId) {
       entry.sockets.push({ kind: v.verdict.includes('AUGMENT') ? 'augment' : 'component', id: v.targetId });
     }
-    for (const fit of v.fits ?? []) entry.sockets.push({ kind: fit.kind, id: fit.id });
-    if (entry.itemId === undefined && entry.sockets.length === 0) planFor.delete(verdictSlotKey(v.slot, activeSet));
+    // The same redundant-fit rule the cards use, so the panel cannot hide an
+    // instruction while still counting it toward DONE. An EQUIP is the
+    // exception: its fits describe the incoming item, and the run recorded no
+    // sockets for something not yet worn, so they all stand as requirements.
+    const asked =
+      v.verdict === 'EQUIP'
+        ? (v.fits ?? [])
+        : actionableFits(v.verdict, v.fits ?? [], driftBaseline(vKey));
+    for (const fit of asked) entry.sockets.push({ kind: fit.kind, id: fit.id });
+    if (entry.itemId === undefined && entry.sockets.length === 0) planFor.delete(vKey);
   }
 
   // "The slot holds the item the plan named" — modulo sockets, because carrying

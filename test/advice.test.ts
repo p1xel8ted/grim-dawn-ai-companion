@@ -36,7 +36,7 @@ import {
 import { documentSocketables } from '../src/core/context/builder.js';
 import { loadSnapshot } from '../src/core/session.js';
 import { resolveSettings } from '../src/core/settings.js';
-import { loadoutDrift, type WornSlot } from '../src/renderer/src/advice.js';
+import { actionableFits, loadoutDrift, type SocketFit, type WornSlot } from '../src/renderer/src/advice.js';
 import { verdictSlotKey, weaponSlotRef } from '../src/shared/slots.js';
 import { adviceMarks, staleIds } from '../src/shared/advice-marks.js';
 import { answerProse, planBlock, replacePlanBlock } from '../src/shared/answer.js';
@@ -1042,3 +1042,134 @@ describe('slot label matcher', () => {
 function v(over: Partial<AdvisorPlan['verdicts'][number]>): AdvisorPlan['verdicts'][number] {
   return { slot: 'Head', itemId: '', verdict: 'KEEP', reason: '', ...over };
 }
+
+describe('actionableFits', () => {
+  const fit = (kind: 'component' | 'augment', id: string, name?: string) =>
+    ({ kind, id, ...(name ? { name } : {}) }) as SocketFit;
+
+  it('drops a fit naming the socketable the slot already carries', () => {
+    const fits = [fit('component', 'jyfo', 'Scaled Hide'), fit('augment', 'ri6s', 'Demonbane Powder')];
+    expect(actionableFits('KEEP', fits, { component: { id: 'jyfo' }, augment: { id: 'ri6s' } })).toEqual([]);
+  });
+
+  it('drops a redundant component fit on a verdict named for the augment', () => {
+    const fits = [fit('component', '512e', 'Leathery Hide')];
+    expect(actionableFits('RE-AUGMENT', fits, { component: { id: '512e' }, augment: { id: 'old' } })).toEqual([]);
+  });
+
+  it('keeps the fit that differs and drops the one that does not', () => {
+    const fits = [fit('component', 'jyfo'), fit('augment', 'new1')];
+    expect(actionableFits('KEEP', fits, { component: { id: 'jyfo' }, augment: { id: 'old1' } })).toEqual([
+      fit('augment', 'new1'),
+    ]);
+  });
+
+  it('keeps a fit filling a socket that holds nothing', () => {
+    const fits = [fit('component', 'jyfo')];
+    expect(actionableFits('KEEP', fits, { augment: { id: 'ri6s' } })).toEqual(fits);
+  });
+
+  it('keeps a same-augment fit after SWAP-COMPONENT, which takes the augment off', () => {
+    // Replacing the component destroys the augment, so re-stating it is the
+    // instruction to buy it again, not a no-op.
+    const fits = [fit('augment', 'fdlo', 'Consecrated Silver')];
+    expect(actionableFits('SWAP-COMPONENT', fits, { component: { id: 'old' }, augment: { id: 'fdlo' } })).toEqual(fits);
+  });
+
+  it('keeps a same-augment fit when a component fit replaces what is installed', () => {
+    const fits = [fit('component', 'new1'), fit('augment', 'ri6s')];
+    expect(actionableFits('EQUIP', fits, { component: { id: 'old1' }, augment: { id: 'ri6s' } })).toEqual(fits);
+  });
+
+  it('keeps every fit when the run recorded no sockets for the slot', () => {
+    const fits = [fit('component', 'jyfo'), fit('augment', 'ri6s')];
+    expect(actionableFits('KEEP', fits, undefined)).toEqual(fits);
+  });
+
+  it('treats two ids as two socketables however they are labelled', () => {
+    const fits = [fit('component', 'aaaa', 'Scaled Hide')];
+    expect(actionableFits('KEEP', fits, { component: { id: 'bbbb', name: 'Scaled Hide' } })).toEqual(fits);
+  });
+
+  it('falls back to the name when the worn copy carries no id', () => {
+    // A socketable can be worn without ever being offered as a candidate, and
+    // then it has no dossier id to compare.
+    const fits = [fit('component', 'jyfo', 'Scaled Hide')];
+    expect(actionableFits('KEEP', fits, { component: { name: 'Scaled Hide' } })).toEqual([]);
+  });
+
+  it('never matches a missing name against another missing name', () => {
+    const fits = [fit('component', 'jyfo')];
+    expect(actionableFits('KEEP', fits, { component: {} })).toEqual(fits);
+  });
+});
+
+describe('redundant fits and drift', () => {
+  /** The live side, as `currentWorn` builds it from the snapshot. */
+  const now = (
+    slots: Record<string, { itemId: string; display?: string; baseId?: string; componentId?: string; augmentId?: string }>,
+  ): Record<string, WornSlot> =>
+    Object.fromEntries(Object.entries(slots).map(([slot, v]) => [slot, { display: '', ...v } as WornSlot]));
+
+  const envWith = (verdicts: unknown[], wornSockets: Record<string, { component?: string; augment?: string }>, worn: Record<string, string>) =>
+    ({
+      character: '_Stiix',
+      generatedAt: '2026-09-12T06:12:15.850Z',
+      gameVersion: 'v1.3.0.8',
+      provider: 'codex-cli',
+      model: 'gpt-6-astra',
+      effort: 'medium',
+      calls: 1,
+      usage: { inputTokens: 1, outputTokens: 2 },
+      durationMs: 1,
+      warnings: [],
+      firstWarnings: [],
+      revised: false,
+      revisionRejected: false,
+      answer: '',
+      plan: { verdicts, hold: [], sell: [] },
+      verdictRows: [],
+      itemNames: { worn1: 'Devourer Ring', worn2: 'Cesarin' },
+      socketableNames: {},
+      worn,
+      wornSockets,
+    }) as unknown as AdviseEnvelope;
+
+  it('reports moved, not done, when a real socket change follows fits that asked for nothing', () => {
+    // Both fits restated what the slot already carried, so the plan asked
+    // nothing of it. A later component change is drift, not the plan done.
+    const env = envWith(
+      [{ slot: 'Ring 1', verdict: 'KEEP', itemName: 'Devourer Ring', fits: [{ kind: 'component', id: 'qu0b' }, { kind: 'augment', id: 'ftec' }] }],
+      { 'Ring 1': { component: 'qu0b', augment: 'ftec' } },
+      { 'Ring 1': 'worn1' },
+    );
+    const drift = loadoutDrift(env, now({ 'Ring 1': { itemId: 'worn9', display: 'Devourer Ring', componentId: 'other', augmentId: 'ftec' } }));
+    expect(drift[0]).toMatchObject({ slot: 'Ring 1', state: 'moved', piecesDone: [], piecesLeft: [] });
+  });
+
+  it('finds the recorded sockets through a slot alias the plan used', () => {
+    // The plan says "Main hand"; the run recorded "Weapon set 1 main". Without
+    // alias-aware matching the baseline is missed and the fit still counts.
+    const env = envWith(
+      [{ slot: 'Main hand', verdict: 'KEEP', itemName: 'Cesarin', fits: [{ kind: 'component', id: 'eijg' }] }],
+      { 'Weapon set 1 main': { component: 'eijg' } },
+      { 'Weapon set 1 main': 'worn2' },
+    );
+    const drift = loadoutDrift(env, now({ 'Weapon set 1 main': { itemId: 'worn9', display: 'Cesarin', componentId: 'zzz' } }));
+    expect(drift[0]).toMatchObject({ slot: 'Weapon set 1 main', state: 'moved', piecesLeft: [] });
+  });
+
+  it('still requires every piece of a real EQUIP, whose fits describe the incoming item', () => {
+    const env = envWith(
+      [{ slot: 'Legs', verdict: 'EQUIP', itemName: 'Bloodrite', targetId: 'lacg', fits: [{ kind: 'component', id: 'jyfo' }, { kind: 'augment', id: 'kzog' }] }],
+      { Legs: { component: 'jyfo', augment: 'ri6s' } },
+      { Legs: 'jk8f' },
+    );
+    const env2 = { ...env, verdictRows: [{ slot: 'Legs', current: '', currentName: '', currentId: 'jk8f', next: '', nextName: '', nextId: 'lacg', action: '', gains: [], costs: [], why: '', replaces: true }] } as unknown as AdviseEnvelope;
+    const drift = loadoutDrift(env2, now({ Legs: { itemId: 'pasu', display: 'Bloodrite', componentId: 'jyfo', augmentId: 'kzog' } }));
+    // The component fit equals the recorded baseline, but an EQUIP's fits are
+    // about the incoming item, so it is still owed.
+    expect(drift[0]?.piecesLeft).toContain('item lacg');
+    expect(drift[0]?.state).toBe('partial');
+  });
+});

@@ -28,6 +28,7 @@ import {
   loadoutDrift,
   shortVerdict,
   slotKey,
+  actionableFits,
   socketFits,
   socketMove,
   type SlotAdvice,
@@ -199,8 +200,18 @@ function SlotRow({
   // Anything the slot is told to fit that its verdict is not named for. It goes
   // on whichever card ends up being the proposal — the candidate for an EQUIP,
   // the worn item otherwise — because that is the item that will be carrying it.
-  const fits = socketFits(advice);
   const candidate = advice?.replaces ? byId.get(advice.targetId) : undefined;
+  // An EQUIP's fits are judged against the candidate, because that is the item
+  // that will carry them - a fit naming what the candidate already holds asks
+  // for nothing. Every other verdict keeps the item, so `socketFits` has
+  // already judged those against the sockets the run recorded.
+  const fits =
+    advice?.verdict === 'EQUIP' && candidate
+      ? actionableFits('EQUIP', advice.plan?.fits ?? [], {
+          ...(candidate.tooltip.component ? { component: candidate.tooltip.component } : {}),
+          ...(candidate.tooltip.augment ? { augment: candidate.tooltip.augment } : {}),
+        })
+      : socketFits(advice);
   const proposed = candidate ? withFits(candidate, fits, socketables, names) : undefined;
 
   // A socket move keeps the item, so the proposal is that same item with the
