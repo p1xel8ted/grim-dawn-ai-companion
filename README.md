@@ -78,6 +78,16 @@ newest backups are kept, so rolling back is a rename and the folder does not
 grow by a third of a gigabyte per deploy. The target has no default: set
 `GD_DEPLOY_DIR` or pass the path as an argument.
 
+The build it installs is `release/win-unpacked` unless you say otherwise, as a
+second argument or `GD_BUILD_DIR`. That matters when packaging had to write
+somewhere else: on a synced drive the final rename can be refused, and building
+to a local folder is the way round it.
+
+```powershell
+npm run dist:win -- --config.directories.output="$env:TEMP\gd-build"
+npm run deploy:win -- "G:\Applications\Grim Dawn AI Companion" "$env:TEMP\gd-build\win-unpacked"
+```
+
 ## Where the data comes from
 
 **Your Grim Dawn install, and nothing else.** The tool makes no network requests

@@ -9,10 +9,15 @@
  * The target is `GD_DEPLOY_DIR`, or the first argument. There is no default:
  * where somebody keeps their apps is theirs, and a path baked in here would be
  * wrong for everyone but the machine it was written on.
+ *
+ * The build to install is the second argument, then `GD_BUILD_DIR`, then
+ * `release/win-unpacked`. It is worth overriding when the packaging step had to
+ * write somewhere else - on a synced drive the final rename can be refused, and
+ * building to a local folder is the way round it.
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 /** How many timestamped backups survive a deploy. */
 const KEEP_BACKUPS = 3;
@@ -46,6 +51,34 @@ function stamp(now = new Date()) {
   );
 }
 
+/**
+ * The same directory as the OS finally sees it: junctions followed, and on
+ * Windows folded to one case so `App` and `app` are not two places. A path that
+ * is not there yet is answered through the nearest parent that is, because the
+ * install directory legitimately may not exist on a first deploy.
+ */
+function canonical(path) {
+  const full = resolve(path);
+  try {
+    return fold(realpathSync.native(full));
+  } catch {
+    try {
+      return fold(join(realpathSync.native(dirname(full)), basename(full)));
+    } catch {
+      return fold(full);
+    }
+  }
+}
+
+function fold(path) {
+  return process.platform === 'win32' ? path.toLowerCase() : path;
+}
+
+/** Is `inner` that directory, or somewhere beneath it? */
+function within(inner, outer) {
+  return inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : outer + sep);
+}
+
 function fail(message) {
   console.error(`deploy: ${message}`);
   process.exit(1);
@@ -61,9 +94,9 @@ function main() {
     );
   }
 
-  const source = resolve(BUILD_DIR);
+  const source = resolve(process.argv[3] || process.env.GD_BUILD_DIR || BUILD_DIR);
   if (!existsSync(join(source, 'resources', 'app.asar'))) {
-    fail(`no packaged build at ${BUILD_DIR}. Run \`npm run dist:win\` first.`);
+    fail(`no packaged build at ${source}. Run \`npm run dist:win\` first.`);
   }
 
   const dest = resolve(target);
@@ -73,6 +106,15 @@ function main() {
 
   const built = statSync(join(source, 'resources', 'app.asar')).mtime;
   console.log(`deploying build of ${built.toLocaleString()}`);
+
+  // The two must be separate places. A source inside the install is carried off
+  // by the backup rename before it can be copied, and an install inside the
+  // source is copied into itself; both are checked before anything moves.
+  const from = canonical(source);
+  const to = canonical(dest);
+  if (within(from, to) || within(to, from)) {
+    fail(`the build at ${source} is inside ${dest}, or the other way round. They have to be separate folders.`);
+  }
 
   if (existsSync(dest)) {
     const backup = join(parent, `${appName}.backup-${stamp()}`);
