@@ -36,7 +36,8 @@ import {
 import { documentSocketables } from '../src/core/context/builder.js';
 import { loadSnapshot } from '../src/core/session.js';
 import { resolveSettings } from '../src/core/settings.js';
-import { actionableFits, loadoutDrift, type SocketFit, type WornSlot } from '../src/renderer/src/advice.js';
+import { actionableFits, loadoutDrift, resolveCandidate, type SocketFit, type WornSlot } from '../src/renderer/src/advice.js';
+import type { UiItem } from '../src/shared/view.js';
 import { verdictSlotKey, weaponSlotRef } from '../src/shared/slots.js';
 import { adviceMarks, staleIds } from '../src/shared/advice-marks.js';
 import { answerProse, planBlock, replacePlanBlock } from '../src/shared/answer.js';
@@ -1171,5 +1172,46 @@ describe('redundant fits and drift', () => {
     // about the incoming item, so it is still owed.
     expect(drift[0]?.piecesLeft).toContain('item lacg');
     expect(drift[0]?.state).toBe('partial');
+  });
+});
+
+describe('resolveCandidate', () => {
+  const item = (docId: string, baseId: string, display: string) => ({ docId, baseId, display }) as unknown as UiItem;
+  const map = (...items: UiItem[]) => new Map(items.map((i) => [i.docId, i]));
+
+  it('takes the exact id when the item is still there', () => {
+    const want = item('lacg', 'iuio', 'Scorchrune Legwraps');
+    expect(resolveCandidate('lacg', 'iuio', map(want, item('qkpn', 'iuio', 'Scorchrune Legwraps')))).toEqual({
+      state: 'found',
+      item: want,
+    });
+  });
+
+  it('follows the base id when fitting the plan changed the item id', () => {
+    // itemId hashes the fitted socketables, so carrying out the plan's own
+    // component moves the candidate to a new id. Same item, same base.
+    const moved = item('qkpn', 'iuio', 'Scorchrune Legwraps');
+    expect(resolveCandidate('lacg', 'iuio', map(moved))).toEqual({ state: 'found', item: moved });
+  });
+
+  it('does not accept a same-named item whose base differs', () => {
+    expect(resolveCandidate('lacg', 'iuio', map(item('zzzz', 'other', 'Scorchrune Legwraps')))).toEqual({
+      state: 'missing',
+    });
+  });
+
+  it('reports missing rather than guessing when the run recorded no base id', () => {
+    expect(resolveCandidate('lacg', undefined, map(item('qkpn', 'iuio', 'Scorchrune Legwraps')))).toEqual({
+      state: 'missing',
+    });
+  });
+
+  it('reports ambiguous rather than picking one of two copies', () => {
+    const two = map(item('aaaa', 'iuio', 'Scorchrune Legwraps'), item('bbbb', 'iuio', 'Scorchrune Legwraps'));
+    expect(resolveCandidate('lacg', 'iuio', two)).toEqual({ state: 'ambiguous' });
+  });
+
+  it('reports missing when nothing carries the base id', () => {
+    expect(resolveCandidate('lacg', 'iuio', map(item('qkpn', 'zzzz', 'Something Else')))).toEqual({ state: 'missing' });
   });
 });

@@ -29,6 +29,7 @@ import {
   shortVerdict,
   slotKey,
   actionableFits,
+  resolveCandidate,
   socketFits,
   socketMove,
   type SlotAdvice,
@@ -200,7 +201,20 @@ function SlotRow({
   // Anything the slot is told to fit that its verdict is not named for. It goes
   // on whichever card ends up being the proposal — the candidate for an EQUIP,
   // the worn item otherwise — because that is the item that will be carrying it.
-  const candidate = advice?.replaces ? byId.get(advice.targetId) : undefined;
+  // The item an EQUIP names, found by exact id and then by base id, because
+  // fitting the component the plan asked for changes the id it was named by.
+  // Only an EQUIP names an item to go and find. A socket verdict's `targetId`
+  // is the socketable, which is not in this map and must not be looked for here.
+  const lookup =
+    advice?.verdict === 'EQUIP' && advice.replaces
+      ? resolveCandidate(advice.targetId, advice.targetBaseId, byId)
+      : undefined;
+  const legacyCandidate = advice?.replaces && !lookup ? byId.get(advice.targetId) : undefined;
+  const candidate = lookup ? (lookup.state === 'found' ? lookup.item : undefined) : legacyCandidate;
+  // A replacement whose item cannot be found must say so. It must never fall
+  // through to the branch below, which would draw the item being *replaced*
+  // with the plan's fits on it and present that as the thing to wear.
+  const unresolved = lookup && lookup.state !== 'found' ? lookup.state : undefined;
   // An EQUIP's fits are judged against the candidate, because that is the item
   // that will carry them - a fit naming what the candidate already holds asks
   // for nothing. Every other verdict keeps the item, so `socketFits` has
@@ -231,9 +245,9 @@ function SlotRow({
       : // A slot can be told to fit something with no socket *verdict* at all —
         // a free component fill beside a KEEP. That is still a changed item, so
         // it still gets a proposal card.
-        fits.length > 0 && current
-        ? withFits(current, fits, socketables, names)
-        : undefined;
+        !unresolved && fits.length > 0 && current
+          ? withFits(current, fits, socketables, names)
+          : undefined;
 
   const destroys = socket?.from ? (byId.get(socket.from)?.display ?? socket.from) : '';
 
@@ -328,7 +342,16 @@ function SlotRow({
       </div>
 
       <div className="slot-side slot-proposed">
-        {proposed ? (
+        {unresolved ? (
+          <div className="face-empty face-unresolved">
+            {advice?.targetName ?? `#${advice?.targetId ?? ''}`}
+            <span>
+              {unresolved === 'ambiguous'
+                ? 'more than one of these — open your stash to pick'
+                : 'not in your bags or stash any more'}
+            </span>
+          </div>
+        ) : proposed ? (
           <ItemFace
             item={proposed}
             highlighted={highlight.isHighlighted(proposed.docId)}

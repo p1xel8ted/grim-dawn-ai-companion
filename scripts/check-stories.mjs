@@ -871,6 +871,26 @@ check('its wide table scrolls inside itself', hostile.tableScrolls);
 check('its code block scrolls inside itself', hostile.codeScrolls);
 check('and an unbreakable identifier breaks rather than overflowing', hostile.paraOverflow.every((d) => d <= 0));
 
+// The item a swap names can stop resolving once the reader fits the component
+// the plan asked for, because an item's id includes what it carries. The card
+// has to say the item is gone; drawing the outgoing item as the proposal is
+// the regression this pins.
+await page.goto(story('parts--loadout-missing-candidate'), { waitUntil: 'networkidle' });
+const unresolved = page.locator('.face-unresolved');
+check('a swap whose item is gone says so', (await unresolved.count()) === 1, `${await unresolved.count()} cards`);
+check(
+  'it names the item the plan wanted',
+  (await unresolved.first().innerText()).trim().length > 0,
+  (await unresolved.first().innerText()).trim().replace(/\s+/g, ' '),
+);
+{
+  // The outgoing item is on the current side and must not also be drawn as the
+  // thing to wear.
+  const goneRow = page.locator('.slot-row', { has: page.locator('.face-unresolved') }).first();
+  const faces = await goneRow.locator('.slot-proposed .item-face').count();
+  check('the item being replaced is not drawn as the proposal', faces === 0, `${faces} proposal faces`);
+}
+
 await page.goto(story('parts--materials'), { waitUntil: 'networkidle' });
 const materialRows = page.locator('.material-row');
 check('the materials list renders every entry', (await materialRows.count()) === 6, `${await materialRows.count()} rows`);

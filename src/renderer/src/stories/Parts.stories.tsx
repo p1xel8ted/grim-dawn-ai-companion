@@ -55,6 +55,24 @@ export const LoadoutWithAdvice: StoryObj = {
   },
 };
 
+export const LoadoutMissingCandidate: StoryObj = {
+  name: 'Loadout — the item a swap named is gone',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    const advice = fixtureAdvice(snapshot);
+    // Fitting the component a plan asks for changes the item's id, so the id
+    // the plan named can stop resolving once the reader acts on it. The card
+    // must say so rather than draw the item being replaced.
+    const row = advice.verdictRows.find((r) => r.replaces)!;
+    const gone = { ...advice, verdictRows: advice.verdictRows.map((r) => (r === row ? { ...r, nextId: 'nosuchid' } : r)) };
+    return (
+      <Frame>
+        <LoadoutPanel snapshot={snapshot} advice={gone} weaponSet={1} onWeaponSet={() => {}} />
+      </Frame>
+    );
+  },
+};
+
 export const Advice: StoryObj = {
   name: 'Advice summary',
   render: () => {

@@ -12,6 +12,7 @@
 import { adviceMarks } from '../../shared/advice-marks.js';
 import type { AdviseEnvelope, AdvisorPlan, VerdictRow } from '../../shared/ipc.js';
 import { slotKey, verdictSlotKey } from '../../shared/slots.js';
+import type { UiItem } from '../../shared/view.js';
 
 export { slotKey } from '../../shared/slots.js';
 
@@ -39,6 +40,8 @@ export interface SlotAdvice {
    * judged redundant against. Absent for a run stored before the record existed.
    */
   baseline?: SocketBaseline;
+  /** The base id of the item an EQUIP names, for finding it after a socket change. */
+  targetBaseId?: string;
   /** True when the verdict actually replaces the item in the slot. */
   replaces: boolean;
   /** Display name of the proposed item, when there is one. */
@@ -119,6 +122,40 @@ export function socketFits(advice: SlotAdvice | undefined): readonly SocketFit[]
   // against the candidate itself, which is what will carry them.
   if (advice?.verdict === 'EQUIP') return fits;
   return actionableFits(advice?.verdict ?? '', fits, advice?.baseline);
+}
+
+/**
+ * The candidate an EQUIP names, found in today's snapshot.
+ *
+ * The plan's `targetId` is a content hash that includes the fitted
+ * socketables, so **carrying the plan out is what breaks the lookup**: fitting
+ * the component it asked for moves the item to a new id. The base id is the
+ * same handle with the attachments left out, which is how the same item is
+ * recognised across that change - the identity `loadoutDrift` already uses for
+ * worn items.
+ *
+ * A differing base id is authoritative and is never rescued by a matching
+ * name: two rolls of one item share a display name and are not the same item.
+ * Where the run recorded no base id, or two copies both match, the answer is
+ * that it could not be resolved - a card drawing the wrong item is worse than
+ * one saying it cannot find the right one.
+ */
+export type CandidateLookup =
+  | { state: 'found'; item: UiItem }
+  | { state: 'missing' }
+  | { state: 'ambiguous' };
+
+export function resolveCandidate(
+  targetId: string,
+  baseId: string | undefined,
+  byId: ReadonlyMap<string, UiItem>,
+): CandidateLookup {
+  const exact = byId.get(targetId);
+  if (exact) return { state: 'found', item: exact };
+  if (baseId === undefined) return { state: 'missing' };
+  const matches = [...byId.values()].filter((item) => item.baseId === baseId);
+  if (matches.length === 1) return { state: 'found', item: matches[0]! };
+  return { state: matches.length === 0 ? 'missing' : 'ambiguous' };
 }
 
 /** A socketable as either side of a comparison happens to name it. */
@@ -225,9 +262,11 @@ export function adviceBySlot(envelope: AdviseEnvelope | null, activeSet: 1 | 2 =
     const key = verdictSlotKey(row.slot, activeSet);
     const plan = verdicts.get(key);
     const baseline = baselineFor(key);
+    const targetBaseId = envelope?.itemBaseIds?.[row.nextId];
     out.set(key, {
       row,
       ...(baseline ? { baseline } : {}),
+      ...(targetBaseId !== undefined ? { targetBaseId } : {}),
       verdict: plan?.verdict ?? '',
       ...(plan ? { plan } : {}),
       replaces: row.replaces,
