@@ -756,20 +756,20 @@ check(
   fireAfterTitle ?? '(no title)',
 );
 
-// The offence notes: throughput leads, because that is the figure loadouts are
-// compared by, and the per-hit payload index sits under it as its component.
+// The offence note: the per-hit payload index, which is the figure loadouts are
+// compared by again since the attack-throughput ranking was taken back out.
 const offenceNotes = await page.locator('.payload-note').allInnerTexts();
+check('there is one offence note', offenceNotes.length === 1, `${offenceNotes.length} notes`);
 check(
-  'the throughput note leads with the figure loadouts are compared by',
-  /attack throughput 96\.4k → 93\.1k/.test(offenceNotes[0] ?? ''),
+  'the payload note leads with the per-hit index',
+  /payload index 41\.2k → 39\.5k/.test(offenceNotes[0] ?? ''),
   offenceNotes[0] ?? '(none)',
 );
-check('and names the attack it is scoped to', /through Cadence/.test(offenceNotes[0] ?? ''));
 check('and frames it as an index, not DPS', /not DPS/.test(offenceNotes[0] ?? ''));
 check(
-  'the payload note states the per-hit index under it',
-  /payload index 41\.2k → 39\.5k/.test(offenceNotes[1] ?? ''),
-  offenceNotes[1] ?? '(none)',
+  'and the attack-throughput note it replaced is gone',
+  !offenceNotes.some((note) => /attack throughput|through Cadence/.test(note)),
+  offenceNotes.join(' | '),
 );
 
 // The defense block reaches the sheet: attribute and armour rows carry afters.
