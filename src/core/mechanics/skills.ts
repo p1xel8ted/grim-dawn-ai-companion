@@ -43,7 +43,6 @@ export const EXCLUSION_REASONS: Readonly<Record<string, string>> = {
   party: 'party buffs cast by other players',
   dualWield: 'dual-wield-only skills — this loadout does not dual wield, so their stats are inert',
   grantedActive: 'item-granted attacks and skills you have to cast (the always-on ones are counted)',
-  weaponRestricted: 'skills and devotion stars that name the weapons they need - this loadout holds none of them, so their stats are inert',
 };
 
 const TOGGLED = new Set([
@@ -156,39 +155,6 @@ export function dualWieldFlag(skill: DbSkill, db: GameDb): 'melee' | 'ranged' | 
   if (flagged('dualWieldOnly')) return 'melee';
   if (flagged('dualRangedOnly')) return 'ranged';
   return undefined;
-}
-
-/** The weapon classes a loadout holds, as the tokens a restriction is written in. */
-export function heldWeaponTokens(hands: readonly (string | undefined)[]): Set<string> {
-  const out = new Set<string>();
-  for (const cls of hands) {
-    if (!cls) continue;
-    const cut = cls.indexOf('_');
-    if (cut >= 0) out.add(cls.slice(cut + 1));
-  }
-  return out;
-}
-
-/**
- * Whether the loadout can actually use a skill that names the weapons it needs.
- *
- * A record with any weapon field set is inert without one of them - Kraken's
- * five stars say "Requires a two-handed melee or two-handed ranged weapon" and
- * the game switches them off, so a loadout without one must not be credited
- * with their attack speed, crit damage or armour. A record that names none is
- * unrestricted and is never filtered here.
- *
- * The match is on the class suffix and it is exact: a `WeaponMelee_Sword` is
- * not a `Sword2h`, and any held hand satisfying one of the listed alternatives
- * is enough. Both the skill and the record its stats live on are asked, because
- * `statRecord` swaps an activator for the buff it points at - no record in the
- * installed build declares the requirement on only one of the two, and this
- * keeps it that way if one ever does.
- */
-export function weaponEligible(skill: DbSkill, db: GameDb, held: ReadonlySet<string>): boolean {
-  const needs = skill.weapons?.length ? skill.weapons : statRecord(skill, db).weapons;
-  if (!needs?.length) return true;
-  return needs.some((token) => held.has(token));
 }
 
 export interface Classification {

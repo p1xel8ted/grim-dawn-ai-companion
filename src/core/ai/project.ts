@@ -20,7 +20,7 @@
  */
 
 import type { GameDb } from '@grimdawn/core/db/types';
-import { aggregateCharacter, attackThroughput, type CharacterAggregate } from '../mechanics/aggregate.js';
+import { aggregateCharacter, type CharacterAggregate } from '../mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../mechanics/stats.js';
 import { weaponSlotRef } from '../../shared/slots.js';
 import type { AccountFiles, ResolvedItem } from '@grimdawn/core/resolve';
@@ -400,47 +400,6 @@ function applyFit(
   install(ref, slot, `${verdict} (fits)`, fit.kind, fit.id);
 }
 
-/**
- * The throughput pair, plus the per-type terms that moved.
- *
- * `moved` carries each type's old share of the index alongside its change,
- * which is the clause that would have caught the Tainted Ruby: two types
- * supplying the whole gain from a 0% starting share is a different fact from
- * the same gain spread across what the build already deals.
- */
-function throughputPair(before: CharacterAggregate, after: CharacterAggregate): PlanProjection['throughput'] {
-  const b = attackThroughput(before);
-  const a = attackThroughput(after);
-
-  const termsOf = (agg: CharacterAggregate): Map<string, number> =>
-    new Map((agg.damage.mainAttackIndex?.terms ?? agg.damage.payloadTerms).map((t) => [t.label, t.contribution]));
-  const bt = termsOf(before);
-  const at = termsOf(after);
-  // Unrounded on purpose: a reader downstream asks whether a type contributed
-  // *nothing* before the swap, and rounding here would turn that into "under
-  // half a point". Fractional terms are ordinary - elemental flat splits in
-  // thirds, midpoints are halves, and `% Weapon Damage` scales both again.
-  const moved = [...new Set([...bt.keys(), ...at.keys()])]
-    .map((label) => ({ label, before: bt.get(label) ?? 0, after: at.get(label) ?? 0 }))
-    .filter((m) => m.before !== m.after)
-    .sort((x, y) => Math.abs(y.after - y.before) - Math.abs(x.after - x.before));
-
-  // The counterfactual: what the swap would be worth with the damage types it
-  // introduces taken back out. Computed here because this is where the attack
-  // rates are - the question is about throughput, so the answer has to be
-  // multiplied by the rate the same way the headline is.
-  const afterTotal = [...at.values()].reduce((n, v) => n + v, 0);
-  const fresh = moved.filter((m) => m.before === 0).reduce((n, m) => n + m.after, 0);
-
-  return {
-    before: Math.round(b.throughput),
-    after: Math.round(a.throughput),
-    ...(fresh > 0 ? { withoutNew: Math.round((afterTotal - fresh) * a.rate) } : {}),
-    ...(b.scoped && before.damage.mainAttackIndex ? { skill: before.damage.mainAttackIndex.skill } : {}),
-    ...(moved.length ? { moved } : {}),
-  };
-}
-
 function diff(
   before: CharacterAggregate,
   after: CharacterAggregate,
@@ -534,7 +493,6 @@ function diff(
     damage,
     totalDamagePercent: { before: before.damage.totalDamagePercent, after: after.damage.totalDamagePercent },
     payload: pair(before.damage.payloadIndex, after.damage.payloadIndex),
-    throughput: throughputPair(before, after),
     defense,
     skillRanks,
     skipped,

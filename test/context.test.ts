@@ -1,19 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildContextDoc,
-  DEFAULT_MAX_TOKENS,
-  devotionBindings,
-  renderSpeedBlock,
-  throughputParts,
-  type ContextInput,
-} from '../src/core/context/builder.js';
-import type { PlanProjection } from '../src/core/ai/envelope.js';
+import { buildContextDoc, DEFAULT_MAX_TOKENS, devotionBindings, type ContextInput } from '../src/core/context/builder.js';
 import { damageIdentity, equipGroup, estimateTokens, selectCandidates } from '../src/core/context/filters.js';
 import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
 import type { DbItem, DbSkill, GameDb } from '@grimdawn/core/db/types';
-import { aggregateCharacter, type SpeedLine, type SpeedSummary } from '../src/core/mechanics/aggregate.js';
+import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
 import { ambiguousStats } from '../src/core/ai/verify.js';
 import { skillLabel } from '../src/core/mechanics/skills.js';
@@ -131,121 +123,6 @@ function dbItem(over: Partial<DbItem> = {}): DbItem {
     ...over,
   };
 }
-
-describe('the offence clause on a projection line', () => {
-  it('keeps the per-hit off-type figure in its own unit when attack speed also moves', () => {
-    // The shape the Tainted Ruby had, and the one that makes the units differ:
-    // a large flat gain in a type the build never deals, on an item that also
-    // costs attack speed. The percentage is throughput; the `+N` beside it is
-    // per-hit scoped-index points, and the two are not the same currency.
-    const projection = {
-      throughput: {
-        before: 1000,
-        after: 900,
-        withoutNew: 800,
-        skill: 'Savagery',
-        moved: [
-          { label: 'Chaos', before: 0, after: 500 },
-          { label: 'Physical', before: 900, after: 800 },
-        ],
-      },
-      payload: { before: 1000, after: 1400 },
-    } as unknown as PlanProjection;
-
-    const parts = throughputParts(projection);
-    const joined = parts.join(' | ');
-    // Throughput fell even though the per-hit index rose: the exact case where
-    // calling the fresh gain a share "of that" would be wrong.
-    expect(joined).toContain('attack throughput -10%');
-    expect(joined).toContain('per-hit payload index +40%');
-    // The headline is already a loss, so there is no positive claim to debunk
-    // and the dependency clause stays out of it. The units still differ, which
-    // is what the two percentages above prove.
-    expect(joined).not.toContain('scoped-index points');
-    expect(joined).not.toMatch(/\+500 of that/);
-  });
-
-  it('fires when attack speed hides the dependency, which a per-hit subtraction misses', () => {
-    // On-build damage genuinely rises (1000 -> 1100 per hit) but the rate falls
-    // to 0.7, so without the 500 fresh off-type points the swap is 770 against
-    // 1000: a 23% loss wearing a +12% headline. Subtracting per-hit terms says
-    // the opposite, because +100 on-build looks like the swap standing on its
-    // own until the rate is applied.
-    const parts = throughputParts({
-      throughput: {
-        before: 1000,
-        after: 1120,
-        withoutNew: 770,
-        skill: 'Savagery',
-        moved: [
-          { label: 'Chaos', before: 0, after: 500 },
-          { label: 'Physical', before: 1000, after: 1100 },
-        ],
-      },
-    } as unknown as PlanProjection);
-    const joined = parts.join(' | ');
-    expect(joined).toContain('attack throughput +12%');
-    expect(joined).toContain('+500 per-hit scoped-index points come from Chaos Damage');
-    expect(joined).toContain('without them the swap is -23% attack throughput rather than the +12% above');
-  });
-
-  it('says nothing about damage types on a swap that is already a loss', () => {
-    // A weapon candidate at -43% is not an upgrade whose case needs debunking.
-    expect(
-      throughputParts({
-        throughput: {
-          before: 1000,
-          after: 570,
-          withoutNew: 400,
-          skill: 'Savagery',
-          moved: [
-            { label: 'Chaos', before: 0, after: 170 },
-            { label: 'Physical', before: 900, after: 400 },
-          ],
-        },
-      } as unknown as PlanProjection).join(' | '),
-    ).not.toContain('scoped-index points');
-  });
-
-  it('does not count a type the build already deals a fraction of as new', () => {
-    // The contributions are stored unrounded precisely so this reads as what it
-    // is. Rounded to integers first, 0.4 would have become 0 and this type
-    // would have been announced as damage the build deals none of.
-    expect(
-      throughputParts({
-        throughput: {
-          before: 1000,
-          after: 1200,
-          withoutNew: 900,
-          skill: 'Savagery',
-          moved: [
-            { label: 'Chaos', before: 0.4, after: 300 },
-            { label: 'Physical', before: 900, after: 800 },
-          ],
-        },
-      } as unknown as PlanProjection).join(' | '),
-    ).not.toContain('scoped-index points');
-  });
-
-  it('stays quiet when the swap improves without the new damage types', () => {
-    // Same fresh Chaos line, but Physical rises too: strip Chaos and the swap
-    // is still an improvement, so the headline does not rest on damage the
-    // build cannot use and the clause has nothing to warn about.
-    const parts = throughputParts({
-      throughput: {
-        before: 1000,
-        after: 1600,
-        withoutNew: 1100,
-        skill: 'Savagery',
-        moved: [
-          { label: 'Chaos', before: 0, after: 500 },
-          { label: 'Physical', before: 900, after: 1000 },
-        ],
-      },
-    } as unknown as PlanProjection);
-    expect(parts.join(' | ')).not.toContain('scoped-index points');
-  });
-});
 
 describe('formatStats', () => {
   const db = stubDb({ 'records/skills/a.dbr': 'Amarasta’s Quick Cut' });
@@ -911,11 +788,6 @@ describe.skipIf(!canRunFixture)(
     // as an index with its exclusions named, never DPS.
     expect(doc.markdown).toMatch(/\*\*Weapon payload index: [\d,.]+\*\*/);
     expect(doc.markdown).toContain('**not DPS**');
-    // And the figure loadouts are actually compared by: the per-hit index run
-    // through the main attack and multiplied by the attacks per second, so an
-    // off-build flat line cannot read as an upgrade on its own.
-    expect(doc.markdown).toMatch(/\*\*Attack throughput index: [\d,.]+\*\*/);
-    expect(doc.markdown).toContain('This is the figure to compare loadouts by');
     // Devotion is declared static, and no sign glitch survives anywhere.
     expect(doc.markdown).toContain('no gear change moves them');
     expect(doc.markdown).not.toMatch(/\+-\d/);
@@ -926,7 +798,7 @@ describe.skipIf(!canRunFixture)(
     // _Suchka's damage rides weapon attacks, so the index is the yardstick.
     const attack = buildContextDoc(input);
     expect(attack.markdown).toContain("State a plan's overall damage cost as a delta against this index.");
-    expect(attack.markdown).toContain('**attack throughput index** is the yardstick');
+    expect(attack.markdown).toContain('**weapon payload index** is the yardstick');
 
     // The same character with the weapon-attack channels cleared is a caster:
     // the index prices a minor channel, and §4 and §11 must both say so and
@@ -946,10 +818,9 @@ describe.skipIf(!canRunFixture)(
     const doc = buildContextDoc(caster);
     expect(doc.markdown).toContain("rides §3's **casting speed** line");
     expect(doc.markdown).toContain("judge a plan's damage cost against the build-focus types' `+%` columns");
-    expect(doc.markdown).toContain('throughput and payload indexes price only a minor channel');
     expect(doc.markdown).toContain('the yardstick here is the build-focus types');
     expect(doc.markdown).not.toContain("State a plan's overall damage cost as a delta against this index.");
-    expect(doc.markdown).not.toContain('**attack throughput index** is the yardstick');
+    expect(doc.markdown).not.toContain('**weapon payload index** is the yardstick');
   });
 
   it('states sustain with its sources, the rule for it, and a skill’s own leech on the skill', async () => {
@@ -1500,104 +1371,5 @@ describe.skipIf(!canRunFixture)(
 
     // An item gated on two thresholds appears under both and says so.
     expect(twelve).toMatch(/also needs (level \d+|\d+ points? into)/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// The attack-speed row, and what the document is allowed to conclude from it
-// ---------------------------------------------------------------------------
-
-/**
- * The attack figures do not reproduce the game: on a live 2H Savagery build the
- * document read 142.1% / 1.78 attacks per second where the game read 137% /
- * 1.86. Two causes are known and neither is fixed - the percentage and the rate
- * are derived from one another against the player record's baseline and the
- * game appears to normalise differently, and `+% Attack Speed` on a modifier
- * node of a charge-stacking attack skill never reaches the total at all. Until
- * that is settled the row may still be printed, but nothing downstream may read
- * "at cap" off it as a fact - that is the sentence that tells a reader to stop
- * buying attack speed. Casting and movement are not in doubt and keep their
- * definite wording, which is what these cases pin apart.
- */
-describe('the speed block', () => {
-  const line = (over: Partial<SpeedLine> = {}): SpeedLine => ({
-    label: 'Attack',
-    base: 1.25,
-    weaponBase: 1.07,
-    permanentPercent: 62,
-    maintainablePercent: 25,
-    cap: 200,
-    percent: 138.7,
-    percentWithMaintainable: 160.4,
-    rawPercent: 138.7,
-    rawPercentWithMaintainable: 160.4,
-    rate: 1.73,
-    rateWithMaintainable: 2.0,
-    headroom: 47,
-    ...over,
-  });
-
-  const summary = (attack: SpeedLine, cast: SpeedLine): SpeedSummary => ({
-    attack,
-    cast,
-    movement: line({ label: 'Movement', base: 0.93, weaponBase: 0.93, cap: 135, percent: 120, percentWithMaintainable: 120, rawPercent: 120, rawPercentWithMaintainable: 120, rate: 1.12, rateWithMaintainable: 1.12, headroom: 20 }),
-    weapons: [],
-    totalSpeedPercent: { permanent: 0, maintainable: 0 },
-  });
-
-  const CAPPED = line({ percent: 200, percentWithMaintainable: 200, rawPercent: 205, rawPercentWithMaintainable: 214, rate: 2.5, rateWithMaintainable: 2.5, headroom: 0 });
-  const UNDER_CAP = line();
-  const CAST_CAPPED = line({ label: 'Casting', weaponBase: 1.25, percent: 200, percentWithMaintainable: 200, rawPercent: 208, rawPercentWithMaintainable: 212, rate: 2.5, rateWithMaintainable: 2.5, headroom: 0 });
-  const CAST_UNDER = line({ label: 'Casting', weaponBase: 1.25 });
-
-  it('does not tell the reader that a capped attack speed is worthless', () => {
-    const md = renderSpeedBlock(summary(CAPPED, CAST_UNDER));
-
-    // The two sentences that turn an estimate into an instruction.
-    expect(md).not.toContain('every further `+% Attack Speed` is worth nothing');
-    expect(md).not.toContain('**Attack speed is capped**');
-    expect(md).toContain('**Attack speed reads as capped, and that reading is not safe to act on**');
-    // The ceiling is a game record; it is the figure held against it that is
-    // modelled, and saying so is what keeps "uncertain" off the cap value.
-    expect(md).toContain('The ceiling is a game record and is not in question');
-    // The omitted contribution is an omission, not a measured shortfall - its
-    // uptime and charge scaling are exactly what was never established, so
-    // nothing here may claim the total is low.
-    expect(md).not.toMatch(/understated|higher rather than lower/);
-    expect(md).toContain('Do not treat further `+% Attack Speed` as worthless');
-  });
-
-  it('keeps the definite cap wording for casting, which is not in doubt', () => {
-    const md = renderSpeedBlock(summary(UNDER_CAP, CAST_CAPPED));
-
-    expect(md).toContain('**Casting speed is capped**');
-    expect(md).toContain('every further `+% Casting Speed` is worth nothing');
-    expect(md).toContain('costs nothing either');
-    // …and says nothing about the attack line being capped, since it is not.
-    expect(md).not.toContain('Attack speed reads as capped');
-  });
-
-  it('marks the attack row as an estimate whether it is over the cap or under it', () => {
-    const over = renderSpeedBlock(summary(CAPPED, CAST_UNDER));
-    const under = renderSpeedBlock(summary(UNDER_CAP, CAST_UNDER));
-
-    expect(over).toContain('**at cap on this estimate**');
-    expect(over).not.toContain('points already wasted');
-    expect(under).toContain("more points of `+%` (estimate)");
-    for (const md of [over, under]) {
-      expect(md).toContain('the whole attack row is an estimate');
-      expect(md).toContain('left out of the total');
-      expect(md).toContain('neither its uptime nor its charge scaling established');
-    }
-  });
-
-  it('leaves the casting and movement headroom cells unmarked', () => {
-    const md = renderSpeedBlock(summary(UNDER_CAP, CAST_UNDER));
-    const row = (label: string): string =>
-      md.split(/\r?\n/).find((l) => l.startsWith(`| ${label} `)) ?? '';
-
-    expect(row('Attack')).toContain('(estimate)');
-    expect(row('Casting')).not.toContain('(estimate)');
-    expect(row('Movement')).not.toContain('(estimate)');
   });
 });

@@ -16,7 +16,7 @@
 
 import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } from '@grimdawn/core/db/types';
 import { REP_TIERS } from '@grimdawn/core/db/types';
-import type { CharacterAggregate, DualWieldEnabler, MatrixRow, SpeedSummary } from '../mechanics/aggregate.js';
+import type { CharacterAggregate, DualWieldEnabler, MatrixRow } from '../mechanics/aggregate.js';
 import type { CharacterStanding, RequirementCheck, RequirementGap } from '../mechanics/requirements.js';
 import { atRank, classify, modifierParent, skillLabel, statRecord, type EffectiveRank } from '../mechanics/skills.js';
 import {
@@ -40,7 +40,6 @@ import {
 } from '../mechanics/stats.js';
 import { shortHash, type AccountFiles, type ResolvedCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
 import { candidateProjections, type CandidateProjection, type SlotProjection } from './projections.js';
-import type { PlanProjection } from '../ai/envelope.js';
 import type { AugmentOption, ClosableWitness } from './closable.js';
 import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '@grimdawn/core/save/types';
@@ -558,32 +557,6 @@ function ironOutlook(input: ContextInput, recipes: RecipeView): IronOutlook {
  */
 const OVERCAP_ENDGAME_LEVEL = 94;
 
-/**
- * What the attack-speed numbers are worth, said once and repeated wherever they
- * are printed.
- *
- * Two things are open. The percentage and the attacks/second are computed from
- * one another against the player record's 1.25/s, and the game's own pairs for
- * this build do not divide by 1.25 - two weapons put the reference nearer 1.36,
- * which no shipped record explains. And a `+% Attack Speed` carried by a
- * modifier node of a charge-based attack skill (Storm Touched, Consecration)
- * never reaches the speed total at all.
- *
- * The second one is an omission, not a known shortfall, and the wording has to
- * keep that distinction: whether those nodes are on all the time and whether
- * the skill's charges scale them is exactly what was not established, so
- * "the total is low by N" would be the assumption we declined to make in code.
- * Neither question is settled, so nothing downstream may treat "at cap" as a
- * fact.
- */
-const ATTACK_SPEED_CAVEAT =
-  'The attack figures are the tool\'s estimate, not a reading off the character sheet, and they are known to disagree with the game. ' +
-  'Two things are unresolved. The tool ties attack percentage and attacks per second to a fixed ratio, but paired in-game readings do not follow that relationship - taking one weapon off moved the percentage by 18 points while the rate moved by 0.04/s, which one ratio cannot do - so the correct calculation is unresolved. ' +
-  'And `+% Attack Speed` granted by a modifier node of a charge-stacking attack skill is left out of the total, with its uptime and whether the skill\'s charges scale it both unestablished, so its effect on the figures is unknown in size and direction. ' +
-  '**So treat the attack percentage, the attacks/second, the cap status and the headroom as estimates.** ' +
-  'Do not conclude from them that further `+% Attack Speed` is worthless or that giving speed up is free; where a change turns on attack speed, say that the figure is uncertain. ' +
-  'The casting and movement lines are not affected by this.';
-
 /** Whether §2 states the +20–30 overcap target, or "the cap itself". */
 function overcapEndgame(ctx: RenderContext): boolean {
   return ctx.aggregate.difficulty === 'Ultimate' && ctx.save.level >= OVERCAP_ENDGAME_LEVEL;
@@ -622,13 +595,12 @@ function gameRules(out: Writer, ctx: RenderContext): void {
 
   out.line();
   out.line(
-    `**Speed caps** (engine values): attack ${caps.attack}%, cast ${caps.cast}%, movement ${caps.run}%. \`+% Casting Speed\` and \`+% Movement Speed\` past their caps are worth nothing. ` +
-      '**Attack speed is the rate of the repeated main weapon attack**, and that is the one channel §4\'s throughput index scales by it: the index is §4\'s main attack - its `% Weapon Damage` share of the gear pools plus its own flat damage - taken per second. ' +
-      'It is not a multiplier on everything §4 lists, and the index does not model the rest; how a cooldown, activated, auto-cast or pet skill responds to attack speed is not something this document establishes either way. ' +
-      'The model behind the figures: the character has a base rate in attacks per second, a weapon shifts that base by its own **additive delta in attacks/second** (never a percentage - a "Very Fast" weapon is about -0.02, "Very Slow" about -0.20), ' +
-      'and the percentage is the resulting rate over the unarmed baseline, with the cap applied to that. ' +
-      'One consequence §3 works out: a slower weapon starts further below 100% and so needs materially more `+% Attack Speed` to reach the same cap. ' +
-      `${ATTACK_SPEED_CAVEAT} §3 states this character's three speeds, each cap and the remaining headroom - read them there rather than estimating, and carry the uncertainty with them.`,
+    `**Speed caps** (engine values): attack ${caps.attack}%, cast ${caps.cast}%, movement ${caps.run}%. \`+% speed\` past a cap is worth nothing — never trade a real stat for it on a build already at cap. ` +
+      '**Attack speed is a multiplier on all damage throughput**, so it is not a minor stat below the cap and not a stat at all above it. ' +
+      'It works like this: the character has a base rate in attacks per second, a weapon shifts that base by its own **additive delta in attacks/second** (never a percentage — a "Very Fast" weapon is about −0.02, "Very Slow" about −0.20), ' +
+      'and the character-sheet percentage is the resulting rate over the unarmed baseline, with the cap applied to *that*. ' +
+      'Two consequences the numbers in §3 already work out: a slower weapon starts further below 100% and so needs materially more `+% Attack Speed` to reach the same cap, ' +
+      'and a character already at the cap loses nothing by giving up speed down to it. **§3 states this character\'s three speeds, the cap and the remaining headroom — read them there rather than estimating.**',
   );
 
   out.line();
@@ -753,7 +725,7 @@ function attributesAndDefenses(out: Writer, ctx: RenderContext): void {
 
   attributeScaling(out, ctx);
   defenseBlock(out, ctx);
-  speedBlock(out, ctx.aggregate.speed);
+  speedBlock(out, ctx);
   resistanceMatrix(out, ctx);
 }
 
@@ -830,33 +802,21 @@ function defenseBlock(out: Writer, ctx: RenderContext): void {
 /**
  * Attack, casting and movement speed against the engine caps.
  *
- * Attack speed multiplies the build's weapon-attack damage — not a cooldown, an
- * activated or auto-cast skill, or a pet — so a dossier that ranks damage and
- * omits it ranks half the answer, and both Stage 6 live runs said in as many
- * words that they could not tell whether the character was already at the cap.
- * The model is spelled out rather than just the number, because
+ * Attack speed multiplies the entire §4 damage profile, so a dossier that ranks
+ * damage and omits it ranks half the answer — and both Stage 6 live runs said in
+ * as many words that they could not tell whether the character was already at
+ * the cap. The model is spelled out rather than just the number, because
  * `characterBaseAttackSpeed` is the kind of field that reads as a percentage and
  * is not one, and because the weapon term is what makes the headroom figure mean
  * anything.
- *
- * The attack row's own arithmetic is under review (see `ATTACK_SPEED_CAVEAT`),
- * so it is printed hedged where casting and movement stay definite.
- * `renderSpeedBlock` is the same block on its own, which is what lets the cap
- * wording be tested at the boundary without a game install.
  */
-export function renderSpeedBlock(speed: SpeedSummary): string {
-  const out = new Writer();
-  speedBlock(out, speed);
-  return out.toString();
-}
-
-function speedBlock(out: Writer, s: SpeedSummary): void {
+function speedBlock(out: Writer, ctx: RenderContext): void {
+  const s = ctx.aggregate.speed;
   out.line();
   out.line(
     `**Speed.** Base rates are ${s.attack.base.toFixed(2)} attacks/second, ${s.cast.base.toFixed(2)} casts/second and ${s.movement.base.toFixed(2)} movement, from the player record. ` +
       'A weapon shifts the attack rate by its own additive delta in attacks/second (Very Fast ≈ −0.02, Very Slow ≈ −0.20 — it is *not* a percentage), ' +
-      'and the attack percentage below is the resulting rate over that baseline, which is why a slow weapon starts under 100% and needs more `+% Attack Speed` to reach the same cap. ' +
-      'That last step is the tool\'s model of the character sheet and it does not currently reproduce the game (§2 says what is open), so the whole attack row is an estimate. ' +
+      'and the percentage below is the resulting rate over that baseline, which is why a slow weapon starts under 100% and needs more `+% Attack Speed` to reach the same cap. ' +
       '`+% Total Speed` moves all three lines at once.',
   );
   out.line();
@@ -875,13 +835,9 @@ function speedBlock(out: Writer, s: SpeedSummary): void {
         `${Math.round(line.percent)}% (${line.rate.toFixed(2)}${unit})`,
         `${Math.round(line.percentWithMaintainable)}% (${line.rateWithMaintainable.toFixed(2)}${unit})`,
         `${Math.round(line.cap)}%`,
-        // The attack row's arithmetic is under review, so its cap verdict is
-        // hedged where the other two stay definite.
         over > 0
-          ? line === s.attack
-            ? `**at cap on this estimate** — about ${Math.round(over)} points over, if the estimate holds`
-            : `**at cap** — ${Math.round(over)} points already wasted`
-          : `${Math.round(line.headroom)} more points of \`+%\`${line === s.attack ? ' (estimate)' : ''}`,
+          ? `**at cap** — ${Math.round(over)} points already wasted`
+          : `${Math.round(line.headroom)} more points of \`+%\``,
       ];
     }),
   );
@@ -896,26 +852,16 @@ function speedBlock(out: Writer, s: SpeedSummary): void {
     );
   }
   for (const line of [s.attack, s.cast, s.movement]) {
-    if (line.rawPercentWithMaintainable <= line.cap) continue;
-    if (line === s.attack) {
+    if (line.rawPercentWithMaintainable > line.cap) {
       notes.push(
-        `**Attack speed reads as capped, and that reading is not safe to act on**: the estimate carries ${Math.round(line.rawPercentWithMaintainable)}% against a ${Math.round(line.cap)}% ceiling, ` +
-          `about ${Math.round(line.rawPercentWithMaintainable - line.cap)} points over. The ceiling is a game record and is not in question; the figure held against it is the estimate, so the cap status is what is unsafe. ` +
-          'Do not treat further `+% Attack Speed` as worthless or speed given up as free; if a recommendation turns on it, say the figure is uncertain.',
+        `**${line.label} speed is capped**: the character carries ${Math.round(line.rawPercentWithMaintainable)}% against a ${Math.round(line.cap)}% ceiling, so every further \`+% ${line.label} Speed\` is worth nothing. ` +
+          `Losing up to ${Math.round(line.rawPercentWithMaintainable - line.cap)} points of it costs nothing either.`,
       );
-      continue;
     }
-    notes.push(
-      `**${line.label} speed is capped**: the character carries ${Math.round(line.rawPercentWithMaintainable)}% against a ${Math.round(line.cap)}% ceiling, so every further \`+% ${line.label} Speed\` is worth nothing. ` +
-        `Losing up to ${Math.round(line.rawPercentWithMaintainable - line.cap)} points of it costs nothing either.`,
-    );
   }
   notes.push(
     'The composition above (baseline × weapon delta × modifiers, capped on the result) is derived from the game data, not quoted from it — ' +
-      'the caps and both bases are records, the way they combine is not. The casting and movement rows are good to a point or two. ' +
-      'The attack row is not, for the two reasons §2 gives: the tool ties its percentage and its rate to a fixed ratio and paired in-game readings do not follow that relationship, so the correct calculation is unresolved, ' +
-      'and `+% Attack Speed` carried by a modifier of a charge-stacking attack skill is left out of the total, with neither its uptime nor its charge scaling established. ' +
-      'So its percentage, its rate, its cap status and its headroom are all estimates, and none of them supports "further attack speed is worthless" or "giving it up is free".',
+      'the caps and both bases are records, the way they combine is not. Treat the percentages as good to a point or two, and the *direction* — at cap or not — as reliable.',
   );
   out.bullets(notes);
 }
@@ -1204,22 +1150,12 @@ function damageSection(out: Writer, ctx: RenderContext): void {
     // yardstick only for a build whose damage actually rides them. On a caster
     // it prices a minor channel, and a plan told "you spent 30% of the payload"
     // would defend a cost that barely exists.
-    // The rate is already capped and already carries the weapon's additive
-    // attacks-per-second term, so this multiplies it rather than re-deriving it.
-    const attackRate = ctx.aggregate.speed.attack.rate;
     const yardstick = ridesWeaponAttacks(d)
       ? "State a plan's overall damage cost as a delta against this index."
       : "This build's damage does not ride weapon attacks (see the cadence line below), so this index prices only a minor channel — judge a plan's damage cost against the build-focus types' `+%` columns above instead, and quote the index delta only as the secondary figure it is.";
     out.line(
-      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. This is a **per-hit** figure and it treats every damage type alike: a flat line in a type the build never deals is scaled by the same \`+% Total Damage\` as its own, so on its own it will call an off-build stat-stick an upgrade. Read it as one component, not as the answer.`,
+      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. An index in arbitrary units for comparing this loadout against a proposed one — **not DPS**: attack speed (§3 carries the rate), crit, skill \`% Weapon Damage\` multipliers and §3's attribute damage bonus are all excluded. ${yardstick}`,
     );
-    const main = d.mainAttackIndex;
-    if (main) {
-      out.line();
-      out.line(
-        `**Attack throughput index: ${num(Math.round(main.index * attackRate))}** — the same arithmetic run through **${main.skill}** (rank ${main.rank}, ${main.weaponDamagePct}% weapon damage, its own flat damage and \`+%\` columns included) and multiplied by §3's ${attackRate.toFixed(2)} attacks per second. **This is the figure to compare loadouts by**, and §7 states every swap's delta against it. Still **not DPS**: crit, enemy resistance and §3's attribute damage bonus are all excluded. **And the attacks-per-second it is multiplied by is §3's estimate**, so every throughput figure and every throughput delta below is a modelled one. Where the model gives a swap the same rate on both sides the rate cancels *in the model* — the game's own rates may still differ, since rounding, the cap and the omitted modifier speed can all hide a difference — and where the model moves the rate, that part of the delta is only as good as the estimate. Either way state a throughput change as a direction rather than a figure, and where a swap trades an uncertain rate against a per-hit change going the other way, say the two oppose rather than claiming a net. The per-hit payload index above carries no rate and is the figure to fall back on. ${yardstick}`,
-      );
-    }
   }
 
   if (d.conversions.length) {
@@ -1292,7 +1228,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
     out.line();
     out.line(
       ridesAttack
-        ? "The build's damage cadence rides §3's **attack speed** line — the flat pools land through weapon attacks, so a swap that moves attack speed scales the main weapon attack the throughput index is built on. It is not modelled as scaling the other skills above. §3's attack figures are estimates, so weigh that scaling qualitatively rather than quoting a percentage off them."
+        ? "The build's damage cadence rides §3's **attack speed** line — the flat pools land through weapon attacks, so a swap that moves attack speed scales everything above."
         : "The build's damage cadence rides §3's **casting speed** line — the damage arrives through cast skills, so a swap that moves casting speed scales everything above.",
     );
   }
@@ -1675,13 +1611,6 @@ function equippedSection(out: Writer, ctx: RenderContext): void {
   const { aggregate } = ctx;
   out.h(2, '5. Equipped');
   out.line(`Advice is for **weapon set ${aggregate.weaponSet}** (the held one). The other set is inert until swapped to; treat its weapons as candidates.`);
-  // The affix lines carry a "±N%" note and the base line carries none, which
-  // reads as "the base numbers are this item's". They are the record's, the
-  // same as the affixes — the tool reconstructs no instance's roll.
-  out.line();
-  out.line(
-    'Every stat below is the **database record\'s** value, for the base item as much as for the affixes: the tool does not reconstruct what any individual item rolled, so the numbers you see on the item in game may differ from these.',
-  );
 
   const checks = new Map(aggregate.equippedRequirements.map((e) => [e.item, e.check]));
   const byLocation = new Map(ctx.equipped.map((item) => [item.location, item]));
@@ -2109,63 +2038,6 @@ function resistText(vector: ResistVector): string {
 const OVERCAP_TARGET = 20;
 
 /**
- * The offence clause: one throughput figure, then what it is made of.
- *
- * The bare payload index used to stand here alone, and it is a per-hit number
- * that scales every damage type by the character's whole `+%` column, so a
- * pair of large off-build flat lines could read as a double-digit upgrade while
- * the build's own damage and its attack speed both fell. Leading with
- * throughput folds in the main attack's `% Weapon Damage` and the attacks per
- * second; naming the types that moved, with the share they held before, says
- * whether the gain landed anywhere the build can use it.
- *
- * The per-type figures are **per-hit scoped-index points** and are labelled as
- * such. They come off the terms before the attack rate is applied, so where a
- * swap also moves attack speed they are a different unit from the percentage
- * above them. The counterfactual beside them is not: it is throughput, rate
- * included, because the question it answers is about the headline. Deciding a
- * throughput claim on a per-hit subtraction gets the wrong answer whenever
- * speed moves, which is the case this clause exists for.
- */
-export function throughputParts(p: PlanProjection): string[] {
-  const t = p.throughput;
-  if (!t || t.before <= 0 || t.after === t.before) return [];
-  const pct = ((t.after - t.before) / t.before) * 100;
-  const parts = [
-    // Per second, so §3's attack rate is a factor and its doubt travels with
-    // this figure — including where the speed pair beside it is absent because
-    // the two rounded percentages happened to match.
-    `attack throughput ${signed(Math.round(pct * 10) / 10)}% (estimate${t.skill ? `, per second, through ${t.skill}` : ', per second'})`,
-  ];
-
-  // Only a gain needs debunking. A candidate already reading -43% is not an
-  // upgrade whose case rests on the wrong damage, and appending the paragraph
-  // below to every loss is how a section of two hundred candidates gets noisy.
-  const fresh = (t.moved ?? []).filter((m) => m.before === 0 && m.after > 0);
-  const freshGain = fresh.reduce((n, m) => n + m.after, 0);
-  // `withoutNew` is the same throughput with those types taken out, rate and
-  // all, so this compares like with like: does the gain survive without damage
-  // the build does not deal? A sign test, not a cutoff.
-  if (t.after > t.before && fresh.length && t.withoutNew !== undefined && t.withoutNew <= t.before) {
-    const counterfactual = ((t.withoutNew - t.before) / t.before) * 100;
-    parts.push(
-      `${signed(Math.round(freshGain))} per-hit scoped-index points come from ` +
-        `${fresh.map((m) => m.label).join(' and ')} Damage, which this build deals none of today: without them ` +
-        `the swap is ${signed(Math.round(counterfactual * 10) / 10)}% attack throughput rather than the ` +
-        `${signed(Math.round(pct * 10) / 10)}% above (both estimates, since both carry §3's attack rate), so the gain does not stand on the damage types the build ` +
-        'actually uses',
-    );
-  }
-  if (p.payload && p.payload.before > 0 && p.payload.after !== p.payload.before) {
-    const raw = ((p.payload.after - p.payload.before) / p.payload.before) * 100;
-    parts.push(
-      `per-hit payload index ${signed(Math.round(raw * 10) / 10)}% before attack speed and \`% Weapon Damage\` scoping`,
-    );
-  }
-  return parts;
-}
-
-/**
  * The bullets under a candidate for one target slot. Type-first and
  * ` · `-separated throughout, so the document's own qualified-stat rule holds
  * on every figure; non-zero changes only, and the trailing clause says so.
@@ -2201,12 +2073,12 @@ function projectionLines(ctx: RenderContext, candidate: Candidate, target: SlotP
     if (d.percentAfter !== d.percentBefore) parts.push(`${d.label} Damage +${num(d.percentBefore)}% → +${num(d.percentAfter)}%`);
     if (d.flatAfter !== d.flatBefore) parts.push(`${d.label} Damage ${num(d.flatBefore)} → ${num(d.flatAfter)} flat`);
   }
-  parts.push(...throughputParts(p));
+  if (p.payload && p.payload.before > 0 && p.payload.after !== p.payload.before) {
+    const pct = ((p.payload.after - p.payload.before) / p.payload.before) * 100;
+    parts.push(`weapon payload index ${signed(Math.round(pct * 10) / 10)}%`);
+  }
   for (const s of p.speeds) {
-    if (s.after === s.before) continue;
-    // Same estimate as §3's attack row, so it carries the same mark.
-    const mark = s.key === 'attack' ? ' (estimate)' : '';
-    parts.push(`${s.label.toLowerCase()} speed ${num(s.before)}% → ${num(s.after)}%${mark}`);
+    if (s.after !== s.before) parts.push(`${s.label.toLowerCase()} speed ${num(s.before)}% → ${num(s.after)}%`);
   }
   const d = p.defense;
   if (d) {
@@ -3160,8 +3032,8 @@ function task(out: Writer, ctx: RenderContext): void {
     'the **damage profile**, qualitatively: what happens to the build-focus types\' `+%` totals and flat pools, and to the weapon-attack composition. Do **not** recompute per-skill damage figures — §4 states them rank by rank; read a moved skill off those columns',
     'the **enemy resistance-reduction list** restated when a change adds, removes or re-ranks an RR source — RR multiplies on-type damage, and within the flat and percent-reduced categories only the strongest source counts',
     '**skill ranks that move** — a swap that changes `+N to <skill>` shifts every stat read at that rank, including resistances already counted above; attack skills, RR skills and moving-stat buffs have their moved stats in §4\'s rank-by-rank tables, so read them there rather than estimating',
-    '**attack, casting and movement speed** restated against their caps, using §3\'s figures and headroom — attack speed is the rate of the main weapon attack that §4\'s throughput index is built on, so a swap that moves it has a damage consequence the §4 profile does not show, and §3\'s attack figures are estimates, so state the direction and say the size is uncertain rather than quoting a gain',
-    'anything pushed **past a cap** — casting or movement speed past the §3 ceilings, or a resistance past its §2 overcap target (those are wasted stats, not gains). Attack speed past its ceiling is only an estimate of being over, so do not book it as waste',
+    '**attack, casting and movement speed** restated against their caps, using §3\'s figures and headroom — attack speed multiplies all damage throughput, so a swap that moves it has a damage consequence that the §4 profile does not show',
+    'anything pushed **past a cap** — speed past the §3 ceilings, or a resistance past its §2 overcap target (both are wasted stats, not gains)',
   ]);
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');
@@ -3169,8 +3041,8 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line(
     'Trading some damage for a capped resistance is normal; a plan that costs on the order of a third of the build\'s primary `+%` damage pool is not, unless the resistances it buys are otherwise broken. ' +
       (ridesWeaponAttacks(ctx.aggregate.damage)
-        ? '§4\'s **attack throughput index** is the yardstick: state the plan\'s delta against it as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out. Where the gain from a swap lands in damage types that the weapon-attack composition in §4 gives no share of, say so and price it as the smaller thing it is.'
-        : 'This build\'s damage does not ride weapon attacks, so §4\'s throughput and payload indexes price only a minor channel — the yardstick here is the build-focus types\' `+%` damage pools: state the plan\'s damage cost against those columns, and quote the index delta only as the secondary figure it is.'),
+        ? '§4\'s **weapon payload index** is the yardstick: state the plan\'s index delta as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out.'
+        : 'This build\'s damage does not ride weapon attacks, so §4\'s weapon payload index prices only a minor channel — the yardstick here is the build-focus types\' `+%` damage pools: state the plan\'s damage cost against those columns, and quote the index delta only as the secondary figure it is.'),
   );
   out.line();
   out.line('Then a **Next levels** section, ordered cheapest-first, from the costed thresholds in §12 — but **only those worth committing to**: what to spend and which held items it buys, dismissing a competing rung in a clause rather than a row of its own. Attribute points and farming targets are in scope; skill and devotion trees are not.');
@@ -3181,7 +3053,7 @@ function task(out: Writer, ctx: RenderContext): void {
     'never propose a swap that leaves the character unable to meet an item\'s requirements once the outgoing item\'s bonuses and reductions are gone — re-check the whole post-swap loadout',
     'never remove the last dual-wield enabler while leaving two one-handed weapons equipped',
     'never propose moving or trading an item that is soulbound by an applied augment',
-    'never count `+% Casting Speed` or `+% Movement Speed` past the caps in §2, and never count a resistance past its §2 overcap target as a gain. Attack speed is the exception: §3\'s attack figures are estimates, so its cap is not established and `+% Attack Speed` past it may not be written off',
+    'never count `+% speed` past the caps in §2, and never count a resistance past its §2 overcap target as a gain',
     'state when a recommendation depends on something §3 lists as not counted',
   ]);
 }

@@ -1,18 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DbAffix, DbItem, DbSet, DbSkill, GameDb } from '@grimdawn/core/db/types';
-import {
-  aggregateCharacter,
-  attackThroughput,
-  indexTotal,
-  payloadTerms,
-} from '../src/core/mechanics/aggregate.js';
+import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import {
   addDamage,
   addDefense,
   applyConversions,
-  applyStagedConversions,
-  convertStage,
   armorAbsorption,
   ARMOR_PARTS,
   conversions,
@@ -21,7 +14,6 @@ import {
   maxResistContributions,
   penaltyVector,
   resistContributions,
-  type DamageKey,
 } from '../src/core/mechanics/stats.js';
 import {
   addSkillBonuses,
@@ -848,12 +840,7 @@ describe('resistanceMatrix', () => {
     // Item-granted *conditional* skills are the exclusion; an always-on one is
     // counted on its own row, and the sentence has to say which is which.
     expect(aggregate.exclusions.join('\n')).toMatch(/item-granted procs, activated skills and pet skills/);
-    // The record-vs-instance caveat has to reach the **base item**, not only
-    // its affixes: a live Cesarin's Conviction shows +15% Attack Speed where
-    // its record contributes 18, and the old sentence said "affix values" and
-    // left a reader taking the base lines for exact.
-    expect(aggregate.exclusions.join('\n')).toMatch(/base-item and affix stats use the database record values/);
-    expect(aggregate.exclusions.join('\n')).toMatch(/not reconstructed individual rolls/);
+    expect(aggregate.exclusions.join('\n')).toMatch(/jitter/);
   });
 });
 
@@ -881,221 +868,6 @@ describe('weapon payload index', () => {
     // Attack speed, crit and % Weapon Damage are deliberately absent from the
     // arithmetic — the index compares loadouts, it does not claim DPS.
     expect(aggregate.damage.payloadIndex).toBe(295);
-  });
-
-  it('breaks the index into per-type terms that sum back to it', () => {
-    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
-    equipment[6] = instance({ baseName: RING });
-    const aggregate = aggregateCharacter(
-      save({ equipment, weaponSet1: [instance({ baseName: SWORD }), null] }),
-      db,
-    );
-    const terms = aggregate.damage.payloadTerms;
-    expect(terms.map((t) => t.label)).toEqual(['Physical', 'Pierce']);
-    expect(Math.round(indexTotal(terms))).toBe(aggregate.damage.payloadIndex);
-    // Biggest contributor first, so a delta can name the types that moved.
-    expect(Math.round(terms[0]!.contribution)).toBe(240);
-    expect(Math.round(terms[1]!.contribution)).toBe(55);
-  });
-});
-
-describe('conversion priority across stages', () => {
-  const row = (from: DamageKey, to: DamageKey, percent: number) => ({
-    from,
-    to,
-    fromKeys: [from],
-    toKeys: [to],
-    percent,
-  });
-
-  it('lets global conversion draw only from what the skill left behind', () => {
-    // 50% skill Physical -> Fire, then 100% global Physical -> Cold. The skill
-    // takes half; the global row converts all of the half that is left. One
-    // combined call instead treats the 50 and the 100 as competitors for the
-    // same pool and normalises them to 33/67.
-    const staged = applyStagedConversions(
-      { physical: 100 },
-      [row('physical', 'fire', 50)],
-      [row('physical', 'cold', 100)],
-    );
-    expect(staged).toEqual({ fire: 50, cold: 50 });
-    expect(applyConversions({ physical: 100 }, [row('physical', 'fire', 50), row('physical', 'cold', 100)])).not.toEqual(
-      staged,
-    );
-  });
-
-  it('never converts what the skill created a second time', () => {
-    // The global Fire -> Cold row must not touch the Fire the skill just made:
-    // damage never chains through a second pair.
-    expect(
-      applyStagedConversions({ physical: 100 }, [row('physical', 'fire', 50)], [row('fire', 'cold', 100)]),
-    ).toEqual({ physical: 50, fire: 50 });
-  });
-
-  it('still splits proportionally among rows at the same priority', () => {
-    // Within one stage the over-100% rule is unchanged: 150% drawn from one
-    // pool scales both rows back to fill exactly the pool.
-    const same = applyStagedConversions(
-      { physical: 100 },
-      [],
-      [row('physical', 'fire', 50), row('physical', 'cold', 100)],
-    );
-    expect(same.fire).toBeCloseTo(100 / 3, 9);
-    expect(same.cold).toBeCloseTo(200 / 3, 9);
-    expect(same.physical).toBeUndefined();
-  });
-
-  it('splits a stage into what it left alone and what it produced', () => {
-    const { remainder, created } = convertStage({ physical: 100 }, [row('physical', 'fire', 30)]);
-    expect(remainder).toEqual({ physical: 70 });
-    expect(created).toEqual({ fire: 30 });
-  });
-});
-
-describe('attack throughput index', () => {
-  const SWORD = 'records/items/gearweapons/sword.dbr';
-  const AMULET = 'records/items/gearaccessories/amulet.dbr';
-  const OFF_TYPE = 'records/items/gearaccessories/offtype.dbr';
-  const ON_TYPE = 'records/items/gearaccessories/ontype.dbr';
-  const SLOW = 'records/items/gearweapons/slowsword.dbr';
-  const SAVAGERY = 'records/skills/savagery.dbr';
-  const TOGGLE = 'records/skills/toggle.dbr';
-  const TOGGLE_BUFF = 'records/skills/togglebuff.dbr';
-
-  // A physical build with a default-attack replacer, in the shape the live case
-  // has: a big `+% Total Damage` pool built to serve Physical.
-  const db = stubDb({
-    items: {
-      [SWORD]: item(SWORD, {
-        name: 'Sword',
-        slot: 'WeaponMelee_Sword',
-        stats: { offensivePhysicalMin: 100, offensivePhysicalMax: 200, characterBaseAttackSpeed: -0.05 },
-      }),
-      [SLOW]: item(SLOW, {
-        name: 'Slow Sword',
-        slot: 'WeaponMelee_Sword',
-        stats: { offensivePhysicalMin: 100, offensivePhysicalMax: 200, characterBaseAttackSpeed: -0.25 },
-      }),
-      [AMULET]: item(AMULET, {
-        name: 'Plain Amulet',
-        stats: { offensivePhysicalModifier: 200, offensiveTotalDamageModifier: 100 },
-      }),
-      // The Tainted Ruby shape: a large flat line in a type the build never
-      // deals, carried by an always-on granted skill.
-      [OFF_TYPE]: item(OFF_TYPE, {
-        name: 'Off-type Amulet',
-        stats: { offensivePhysicalModifier: 140, offensiveTotalDamageModifier: 100, itemSkillName: TOGGLE },
-      }),
-      [ON_TYPE]: item(ON_TYPE, {
-        name: 'On-type Amulet',
-        stats: { offensivePhysicalModifier: 260, offensiveTotalDamageModifier: 100 },
-      }),
-    },
-    skills: {
-      [SAVAGERY]: skill(SAVAGERY, {
-        name: 'Savagery',
-        class: 'Skill_WeaponPool_Direct',
-        maxLevel: 16,
-        stats: {
-          weaponDamagePct: 150,
-          offensiveSlowBleedingMin: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60],
-        },
-      }),
-      [TOGGLE]: skill(TOGGLE, { class: 'Skill_BuffSelfToggled', buffRecord: TOGGLE_BUFF }),
-      [TOGGLE_BUFF]: skill(TOGGLE_BUFF, {
-        name: 'Flame',
-        class: 'Skill_BuffSelfToggled',
-        stats: { offensiveFireMin: 100, offensiveChaosMin: 100 },
-      }),
-    },
-  });
-
-  const wearing = (amulet: string, weapon = SWORD, rank = 10) => {
-    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
-    equipment[7] = instance({ baseName: amulet });
-    return aggregateCharacter(
-      save({
-        equipment,
-        weaponSet1: [instance({ baseName: weapon }), null],
-        skills: [characterSkill(SAVAGERY, rank)],
-      }),
-      db,
-    );
-  };
-
-  it('scopes the index to the default attack, weapon share and own damage included', () => {
-    const main = wearing(AMULET).damage.mainAttackIndex;
-    expect(main).toMatchObject({ skill: 'Savagery', weaponDamagePct: 150 });
-    // 150 physical midpoint x 150% = 225, x (1 + 300/100) = 900; the skill's own
-    // 60 Bleeding rides the same +% Total Damage for 60 x 2 = 120.
-    expect(main!.index).toBe(1020);
-  });
-
-  it('counts an always-on granted toggle exactly once', () => {
-    const off = wearing(OFF_TYPE);
-    expect(off.damage.ranked.find((e) => e.key === 'fire')?.flat).toBe(100);
-    expect(off.damage.ranked.find((e) => e.key === 'chaos')?.flat).toBe(100);
-    expect(off.grantedSkills.some((g) => g.skill === 'Flame' && g.counted)).toBe(true);
-  });
-
-  it('dilutes a large off-type flat gain that the per-hit index overstates', () => {
-    const before = wearing(AMULET);
-    const after = wearing(OFF_TYPE);
-    const payloadDelta = (after.damage.payloadIndex - before.damage.payloadIndex) / before.damage.payloadIndex;
-    const scoped = attackThroughput(after).throughput / attackThroughput(before).throughput - 1;
-    // The per-hit index reads the swap as a gain; scoped to the attack that
-    // delivers it, the skill's own damage sits in the denominator and does not
-    // move, so the same swap is worth materially less.
-    expect(payloadDelta).toBeGreaterThan(0);
-    expect(scoped).toBeLessThan(payloadDelta);
-  });
-
-  it('still recognises an on-type upgrade', () => {
-    const before = wearing(AMULET);
-    const after = wearing(ON_TYPE);
-    expect(attackThroughput(after).throughput).toBeGreaterThan(attackThroughput(before).throughput);
-  });
-
-  it('charges a swap for the attack speed it costs', () => {
-    const fast = wearing(AMULET, SWORD);
-    const slow = wearing(AMULET, SLOW);
-    // Same per-hit payload, fewer hits: only the throughput figure sees it.
-    expect(slow.damage.payloadIndex).toBe(fast.damage.payloadIndex);
-    expect(attackThroughput(slow).throughput).toBeLessThan(attackThroughput(fast).throughput);
-  });
-
-  it('re-reads the main attack at its new rank when +skills change', () => {
-    // % Weapon Damage and the skill's own flat both ride the rank, so a lost
-    // rank costs the index without any skill-specific code.
-    expect(wearing(AMULET, SWORD, 8).damage.mainAttackIndex!.index).toBeLessThan(
-      wearing(AMULET, SWORD, 10).damage.mainAttackIndex!.index,
-    );
-  });
-
-  it('reproduces the Tainted Ruby case: the raw index overstates the swap', () => {
-    // The live level-63 Physical/Bleeding Warder, from the projected swap in
-    // the Neck slot. Post-conversion pools and +% columns as the dossier
-    // printed them, with +% Total Damage 274 -> 265.
-    const before = payloadTerms(
-      { physical: 382, bleeding: 22, pierce: 8, lightning: 25, vitality: 6 },
-      { physical: 759, bleeding: 432, pierce: 154, lightning: 46, vitality: 39 },
-      274,
-    );
-    const after = payloadTerms(
-      { physical: 378, bleeding: 22, pierce: 8, lightning: 14, vitality: 6, fire: 97, chaos: 97 },
-      { physical: 699, bleeding: 432, pierce: 128, lightning: 86, vitality: 39, fire: 40, chaos: 143 },
-      265,
-    );
-    expect(Math.round(indexTotal(before))).toBe(4677);
-    expect(Math.round(indexTotal(after))).toBe(5210);
-
-    const contribution = (terms: typeof before, key: string) => terms.find((t) => t.key === key)?.contribution ?? 0;
-    // The whole gain is two damage types the build deals none of, and Physical,
-    // which is 86% of what it actually swings, goes backwards.
-    const offType = contribution(after, 'fire') + contribution(after, 'chaos');
-    expect(Math.round(offType)).toBe(886);
-    expect(offType).toBeGreaterThan(indexTotal(after) - indexTotal(before));
-    expect(contribution(after, 'physical')).toBeLessThan(contribution(before, 'physical'));
   });
 });
 
@@ -1129,9 +901,8 @@ describe.skipIf(!haveGameInstall())(`mechanics vs the game (${haveGameInstall() 
   it('exposes the weapon whitelist that build-defining attacks carry', { timeout: TIMEOUT }, async () => {
     const db = await gameDb();
     // Savage Strike is two-handed only; recommending a one-hander would disable it.
-    // The spear entry is `Spear2h` — its record sets that and leaves `Spear` at
-    // zero, and reading the short name dropped every spear restriction in the
-    // game. This list used to be four long and was wrong by one.
+    // The spear entry is `Spear2h`: the record sets that and leaves `Spear` at zero,
+    // so reading the short name dropped every spear restriction in the game.
     expect(db.getSkill('records/skills/playerclass06/savagestrike1.dbr')?.weapons).toEqual([
       'Axe2h',
       'Mace2h',
@@ -1916,158 +1687,3 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
     });
   },
 );
-
-// ---------------------------------------------------------------------------
-// Weapon requirements gate what the aggregate counts
-// ---------------------------------------------------------------------------
-
-/**
- * A skill or devotion star that names the weapons it needs is switched off by
- * the game without one. Kraken's five stars all read "Requires a two-handed
- * melee or two-handed ranged weapon", and the tool used to count them behind a
- * dagger or bare hands: a live save with both weapon sets emptied still carried
- * their +26% attack speed, +15% crit damage and +4% Physical Resistance. The
- * data was always there - `DbSkill.weapons` - and only the reporting list read
- * it. These cases pin the gate on every path into the global fold and, just as
- * much, pin what it must not touch.
- */
-describe('weapon-restricted sources', () => {
-  const TWO_HANDER = 'records/items/gearweapons/melee2h/sword2h.dbr';
-  const ONE_HANDER = 'records/items/gearweapons/melee1h/sword.dbr';
-  const SHIELD = 'records/items/gearweapons/shields/shield.dbr';
-  const SPEAR = 'records/items/gearweapons/melee2h/spear2h.dbr';
-  const GLOVES = 'records/items/gearhands/gloves.dbr';
-  const GATED = 'records/skills/devotion/gated.dbr';
-  const SHIELD_SKILL = 'records/skills/playerclass01/shieldpassive1.dbr';
-  const OPEN = 'records/skills/playerclass01/openpassive1.dbr';
-  const GRANTED = 'records/skills/itemskills/grantedgated.dbr';
-
-  const db = stubDb({
-    items: {
-      [TWO_HANDER]: item(TWO_HANDER, { name: 'Two-hander', slot: 'WeaponMelee_Sword2h' }),
-      [ONE_HANDER]: item(ONE_HANDER, { name: 'One-hander', slot: 'WeaponMelee_Sword' }),
-      [SHIELD]: item(SHIELD, { name: 'Shield', slot: 'WeaponArmor_Shield' }),
-      [SPEAR]: item(SPEAR, { name: 'Spear', slot: 'WeaponMelee_Spear2h' }),
-      [GLOVES]: item(GLOVES, {
-        name: 'Gloves',
-        slot: 'ArmorProtective_Hands',
-        stats: { itemSkillName: GRANTED, itemSkillLevel: 1 },
-      }),
-    },
-    skills: {
-      // Kraken's shape: a two-hander-gated passive carrying speed and more.
-      [GATED]: skill(GATED, {
-        name: 'Gated Star',
-        weapons: ['Axe2h', 'Mace2h', 'Ranged2h', 'Spear2h', 'Sword2h'],
-        stats: { characterAttackSpeedModifier: 26, defensivePhysical: 4, characterLife: 500 },
-      }),
-      [SHIELD_SKILL]: skill(SHIELD_SKILL, {
-        name: 'Shield Passive',
-        weapons: ['Shield'],
-        stats: { characterAttackSpeedModifier: 7, defensiveFire: 10 },
-      }),
-      [OPEN]: skill(OPEN, { name: 'Open Passive', stats: { characterAttackSpeedModifier: 5, defensiveCold: 9 } }),
-      [GRANTED]: skill(GRANTED, {
-        name: 'Granted Gated',
-        weapons: ['Spear2h', 'Sword2h'],
-        stats: { characterAttackSpeedModifier: 11, defensiveAether: 12 },
-      }),
-    },
-    penalty: { Ultimate: {} },
-  });
-
-  const gloves = (): (EquippedItem | null)[] => {
-    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
-    equipment[4] = instance({ baseName: GLOVES });
-    return equipment;
-  };
-
-  const build = (hands: [EquippedItem | null, EquippedItem | null]) =>
-    aggregateCharacter(
-      save({
-        equipment: gloves(),
-        weaponSet1: hands,
-        skills: [characterSkill(OPEN, 1), characterSkill(SHIELD_SKILL, 1)],
-        devotions: [characterSkill(GATED, 1)],
-      }),
-      db,
-    );
-
-  const twoHanded = build([instance({ baseName: TWO_HANDER }), null]);
-  const unarmed = build([null, null]);
-  const oneHanded = build([instance({ baseName: ONE_HANDER }), null]);
-  const withShield = build([instance({ baseName: ONE_HANDER }), instance({ baseName: SHIELD })]);
-  const withSpear = build([instance({ baseName: SPEAR }), null]);
-
-  it('counts a two-hander-gated star, and its non-speed stats, while a two-hander is held', () => {
-    expect(twoHanded.speed.attack.permanentPercent).toBe(26 + 5 + 11);
-    expect(twoHanded.resistances.permanent.physical).toBe(4);
-    expect(twoHanded.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(true);
-  });
-
-  it('drops it unarmed, taking its speed and its resistance with it', () => {
-    expect(unarmed.speed.attack.permanentPercent).toBe(5);
-    expect(unarmed.resistances.permanent.physical ?? 0).toBe(0);
-    expect(unarmed.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(false);
-    // The unrestricted passive is untouched, which is the other half of the fix.
-    expect(unarmed.resistances.permanent.cold).toBe(9);
-  });
-
-  it('drops it for a one-hander too, since the requirement is the weapon and not the empty hand', () => {
-    expect(oneHanded.speed.attack.permanentPercent).toBe(5);
-    expect(oneHanded.resistances.permanent.physical ?? 0).toBe(0);
-  });
-
-  it('matches the class suffix exactly, so a Sword is not a Sword2h', () => {
-    // The one-hander's class is `WeaponMelee_Sword`. If the match were a prefix
-    // or a substring it would satisfy `Sword2h` and the gate would never bite.
-    expect(oneHanded.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(false);
-  });
-
-  it('lets an off-hand satisfy a requirement the main hand does not', () => {
-    // Shield Passive needs `Shield`, which is in the off hand; the gated star
-    // still fails, because a one-hander is not a two-hander.
-    expect(withShield.speed.attack.permanentPercent).toBe(5 + 7);
-    expect(withShield.resistances.permanent.fire).toBe(10);
-    expect(withShield.resistances.permanent.physical ?? 0).toBe(0);
-  });
-
-  it('gates an item-granted skill the same way, and reports it as not counted', () => {
-    const granted = (agg: typeof twoHanded) => agg.grantedSkills.find((g) => g.skill === 'Granted Gated');
-    expect(granted(twoHanded)?.counted).toBe(true);
-    expect(twoHanded.resistances.permanent.aether).toBe(12);
-
-    // The gloves are still worn, so the row has to stay and say why it is off —
-    // silently dropping it would read as the item no longer granting anything.
-    expect(granted(unarmed)?.counted).toBe(false);
-    expect(granted(unarmed)?.activation).toBe('needs a weapon this loadout does not hold');
-    expect(unarmed.resistances.permanent.aether ?? 0).toBe(0);
-  });
-
-  it('names the exclusion rather than dropping the sources silently', () => {
-    expect(unarmed.exclusions.join('\n')).toMatch(/name the weapons they need/);
-    // The two-handed loadout lists it too, because Shield Passive is gated
-    // there — the sentence tracks what this loadout cannot use, not the weapon.
-    expect(twoHanded.exclusions.join('\n')).toMatch(/name the weapons they need/);
-
-    // A loadout with nothing gated must not carry the sentence at all.
-    const nothingGated = aggregateCharacter(
-      save({ weaponSet1: [instance({ baseName: TWO_HANDER }), null], skills: [characterSkill(OPEN, 1)] }),
-      db,
-    );
-    expect(nothingGated.exclusions.join('\n')).not.toMatch(/name the weapons they need/);
-  });
-
-  it('accepts a two-handed spear, whose restriction token is Spear2h and not Spear', () => {
-    // The accepted-weapon vocabulary listed `Spear` and no record sets it; 92
-    // set `Spear2h`. Reading the short name made every spear restriction
-    // invisible, so switching this gate on would have taken the star off a
-    // spear user. Projections cover the same case in test/project.test.ts.
-    expect(withSpear.speed.attack.permanentPercent).toBe(26 + 5 + 11);
-    expect(withSpear.resistances.permanent.physical).toBe(4);
-    expect(withSpear.resistances.rows.some((r) => r.label === 'Gated Star')).toBe(true);
-    // Shield Passive is still gated behind a spear, so the sentence stays —
-    // what must not happen is the star going with it.
-    expect(withSpear.resistances.permanent.fire ?? 0).toBe(0);
-  });
-});

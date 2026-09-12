@@ -731,10 +731,9 @@ function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
       line.maintainablePercent !== 0
         ? ` → ${line.percentWithMaintainable.toFixed(0)}% (${line.rateWithMaintainable.toFixed(2)}) buffed`
         : '';
-    const estimate = line === agg.speed.attack ? ' (estimate)' : '';
     const wasted = line.rawPercentWithMaintainable > line.cap
-      ? `  ⚠ ${(line.rawPercentWithMaintainable - line.cap).toFixed(0)}pp past the ${line.cap}% cap${estimate}`
-      : `  ${line.headroom.toFixed(0)}pp of +% headroom${estimate}`;
+      ? `  ⚠ ${(line.rawPercentWithMaintainable - line.cap).toFixed(0)}pp past the ${line.cap}% cap`
+      : `  ${line.headroom.toFixed(0)}pp of +% headroom`;
     console.log(
       `  ${line.label.padEnd(10)} ${line.percent.toFixed(0)}% (${line.rate.toFixed(2)})${buffed}` +
         `  [base ${line.weaponBase.toFixed(2)}, +${line.permanentPercent.toFixed(0)}%` +
@@ -742,12 +741,6 @@ function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
     );
     if (line.weaponNote) console.log(`             from ${line.weaponNote}`);
   }
-  console.log(
-    '  note: the Attack row is an estimate under review - the tool ties the percentage and the rate to a fixed\n' +
-      '        ratio and paired in-game readings do not follow it, so the correct calculation is unresolved; and\n' +
-      '        +% Attack Speed from a modifier of a charge-stacking attack skill is left out. Its cap status and\n' +
-      '        headroom are not safe to act on.',
-  );
 
   console.log(`\nResistances by source${' '.repeat(24)}${resistHeader()}`);
   let band: string | undefined;

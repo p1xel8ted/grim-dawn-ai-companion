@@ -29,7 +29,6 @@ import {
   addSpeed,
   addVector,
   applyConversions,
-  applyStagedConversions,
   armorAbsorption,
   ARMOR_PARTS,
   ATTR_KEYS,
@@ -70,8 +69,6 @@ import {
   allocatedDevotions,
   atRank,
   classify,
-  heldWeaponTokens,
-  weaponEligible,
   dualWieldFlag,
   effectiveRanks,
   emptyBonuses,
@@ -192,38 +189,6 @@ export interface WeaponAttackSummary {
   mainAttack?: string;
 }
 
-/** One damage type's share of an offence index, kept so the sum can be explained. */
-export interface PayloadTerm {
-  key: DamageKey;
-  label: string;
-  /** Post-conversion flat damage of this type feeding the hit. */
-  flat: number;
-  /** The `+%` column that scaled it, `+% Total Damage` included. */
-  percent: number;
-  /** `flat x (1 + percent / 100)`: this type's contribution to the index. */
-  contribution: number;
-}
-
-/**
- * The same arithmetic run through the default-attack replacer instead of a bare
- * weapon swing.
- *
- * A bare-weapon index counts every flat pool at face value, which is what let a
- * pair of off-build flat lines outweigh the loss of the type the build actually
- * deals: the skill's own flat damage sits in the denominator and does not move
- * when gear changes, so it dilutes an off-type gain the way it really would.
- * Nothing here is skill-specific code. The row is read from `SkillDamage`, so a
- * `+skills` change re-reads it at the new rank for free.
- */
-export interface MainAttackIndex {
-  skill: string;
-  rank: number;
-  /** How much of the weapon's flat damage the skill inherits. */
-  weaponDamagePct: number;
-  index: number;
-  terms: PayloadTerm[];
-}
-
 export interface DamageProfile {
   /**
    * Damage types the build actually invests in, strongest first. Flat figures
@@ -244,10 +209,6 @@ export interface DamageProfile {
    * the payload" instead of one type at a time.
    */
   payloadIndex: number;
-  /** What `payloadIndex` is made of, so a delta can name the types that moved. */
-  payloadTerms: PayloadTerm[];
-  /** Present whenever the build has a default-attack replacer invested. */
-  mainAttackIndex?: MainAttackIndex;
   conversions: ScopedConversion[];
   weaponAttack: WeaponAttackSummary;
   /** Per-skill damage typing for the invested attack skills, biggest sink first. */
@@ -726,13 +687,6 @@ export function aggregateCharacter(
   const slots = equippedSlots(save, db);
   const gear = contributions(slots, db);
   const wielding = wieldingSummary(slots, save, db);
-  // What the hands are holding, in the tokens a skill's weapon requirement is
-  // written in. A restricted skill or devotion star is switched off by the game
-  // without one of them, so it must not reach the fold below.
-  const held = heldWeaponTokens([
-    slots.find((s) => s.slot === 'Main hand')?.item.base?.slot,
-    slots.find((s) => s.slot === 'Off hand')?.item.base?.slot,
-  ]);
 
   // Ranks first: every skill row below is read at the rank the *current* gear
   // puts the skill at, so the two halves of the aggregate agree with each other.
@@ -845,29 +799,19 @@ export function aggregateCharacter(
     // plain passive, so asking the buff would call every aura "always on".
     const toggle = /Toggled/.test(skill.class) || /Toggled/.test(stats.class);
     const { band, reason } = classify(skill, db);
-    // A granted skill that names the weapons it needs is inert without one, the
-    // same as an invested one — decided before `counted` so the row says so
-    // rather than claiming a buff the character is not getting.
-    const eligible = weaponEligible(skill, db, held);
     // Every granting part counts, including a second copy of the same one:
     // two Vicious Spikes are two buffs, and so are two Coldstones. That is
     // the opposite of the set-bonus rule, where a duplicate member adds
     // nothing — both are in-game facts, neither is in the data.
-    const counted = eligible && (band === 'permanent' || band === 'maintainable');
+    const counted = band === 'permanent' || band === 'maintainable';
     grantedSkills.push({
       item: g.part,
       skill: g.name,
       counted,
-      activation: counted
-        ? toggle
-          ? 'toggle'
-          : 'always on'
-        : eligible
-          ? (reason ?? 'cast or triggered')
-          : 'needs a weapon this loadout does not hold',
+      activation: counted ? (toggle ? 'toggle' : 'always on') : (reason ?? 'cast or triggered'),
     });
     if (!counted) {
-      excludedReasons.add(eligible ? (reason ?? 'grantedActive') : 'weaponRestricted');
+      excludedReasons.add(reason ?? 'grantedActive');
       continue;
     }
     // A toggle's energy reservation is the cost of having it on, and the one
@@ -924,13 +868,6 @@ export function aggregateCharacter(
       if (reason) excludedReasons.add(reason);
       continue;
     }
-    // Only the bands that reach the global fold. The attack band keeps its own
-    // rows either way — what a restricted attack skill does when its weapon is
-    // gone is a separate question from what the character sheet totals.
-    if (!weaponEligible(skill, db, held)) {
-      excludedReasons.add('weaponRestricted');
-      continue;
-    }
 
     const stats = statRecord(skill, db);
     const rank = ranks.get(entry.record)?.effective ?? entry.level;
@@ -961,12 +898,6 @@ export function aggregateCharacter(
     const { band, reason } = classify(skill, db);
     if (band !== 'permanent') {
       if (reason) excludedReasons.add(reason);
-      continue;
-    }
-    // Kraken's five stars all require a two-hander; the constellation is still
-    // allocated without one, and contributes nothing.
-    if (!weaponEligible(skill, db, held)) {
-      excludedReasons.add('weaponRestricted');
       continue;
     }
     const name = skillLabel(skill, db);
@@ -1187,106 +1118,6 @@ function collectAttackDamage(
 
 const DAMAGE_TYPE_BY_KEY = new Map(DAMAGE_TYPES.map((t) => [t.key, t]));
 
-/**
- * Every positive flat pool times its own `+%` column, as terms rather than a
- * total.
- *
- * Pure, and exported for exactly that reason: it is the seam the tests pin and
- * the breakdown §7 prints. A single scalar could say a swap was worth +11%
- * without saying that all of it arrived in two damage types the build does not
- * deal, which is how an off-build amulet came to read as a major upgrade.
- */
-export function payloadTerms(
-  flat: Partial<Record<DamageKey, number>>,
-  percent: Partial<Record<DamageKey, number>>,
-  totalPercent: number,
-): PayloadTerm[] {
-  const terms: PayloadTerm[] = [];
-  for (const [dmgKey, amount] of Object.entries(flat) as [DamageKey, number][]) {
-    if (!(amount > 0)) continue;
-    const column = (percent[dmgKey] ?? 0) + totalPercent;
-    terms.push({
-      key: dmgKey,
-      label: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.label ?? dmgKey,
-      flat: amount,
-      percent: column,
-      contribution: amount * (1 + column / 100),
-    });
-  }
-  return terms.sort((a, b) => b.contribution - a.contribution);
-}
-
-export function indexTotal(terms: readonly PayloadTerm[]): number {
-  return terms.reduce((n, t) => n + t.contribution, 0);
-}
-
-/**
- * The index as the build's main attack delivers it.
- *
- * The weapon's flat damage arrives multiplied by the skill's `% Weapon Damage`,
- * the skill's own flat damage joins it, and the skill's own `+%` columns stack
- * on the character's. Conversion runs in the documented priority order
- * (`applyStagedConversions`): the skill's own rows first, then the global ones
- * over what those left behind, with skill-created damage held out of the second
- * stage so nothing converts twice.
- *
- * Still an index and still not DPS: no crit, no enemy resistance, no attribute
- * bonus.
- */
-function mainAttackTerms(
-  attackRows: Map<string, AttackRow>,
-  damage: DamageContribution,
-  globalConversions: readonly Conversion[],
-): MainAttackIndex | undefined {
-  const row = [...attackRows.values()].find((r) => r.isDefaultAttack);
-  if (!row) return undefined;
-  const share = row.weaponDamagePct / 100;
-
-  const raw: Partial<Record<DamageKey, number>> = {};
-  for (const [dmgKey, amount] of Object.entries(damage.flat) as [DamageKey, number][]) {
-    if (amount) raw[dmgKey] = (raw[dmgKey] ?? 0) + amount * share;
-  }
-  for (const [dmgKey, amount] of Object.entries(row.flat) as [DamageKey, number][]) {
-    if (amount) raw[dmgKey] = (raw[dmgKey] ?? 0) + amount;
-  }
-
-  const flat = applyStagedConversions(raw, row.conversions, globalConversions);
-  const percent: Partial<Record<DamageKey, number>> = {};
-  for (const key of new Set([...Object.keys(damage.percent), ...Object.keys(row.ownPercent)]) as Set<DamageKey>) {
-    percent[key] = (damage.percent[key] ?? 0) + (row.ownPercent[key] ?? 0);
-  }
-
-  const terms = payloadTerms(flat, percent, damage.totalPercent + row.ownTotalPercent);
-  return {
-    skill: row.label,
-    rank: row.rank || 1,
-    weaponDamagePct: Math.round(row.weaponDamagePct),
-    index: Math.round(indexTotal(terms)),
-    terms,
-  };
-}
-
-/**
- * The comparable offence scalar: what the build's attack puts out per second.
- *
- * `SpeedLine.rate` is already the capped attacks-per-second figure built from
- * the weapon's additive delta, so this multiplies rather than re-deriving it,
- * and an at-cap character correctly gains nothing from more `+% Attack Speed`. It
- * falls back to the bare payload where the build has no default-attack
- * replacer, which is what a character swinging the weapon itself actually does.
- */
-export function attackThroughput(aggregate: CharacterAggregate): {
-  index: number;
-  rate: number;
-  throughput: number;
-  scoped: boolean;
-} {
-  const main = aggregate.damage.mainAttackIndex;
-  const index = main?.index ?? aggregate.damage.payloadIndex;
-  const rate = aggregate.speed.attack.rate;
-  return { index, rate, throughput: index * rate, scoped: main !== undefined };
-}
-
 function damageProfile(
   damage: DamageContribution,
   conversionRows: ScopedConversion[],
@@ -1384,20 +1215,15 @@ function damageProfile(
   // The payload index, off the unrounded pools. Kept to one decision: every
   // positive post-conversion flat pool times its own accumulated `+%` column
   // (plus the `+% Total Damage` that scales all of them).
-  const terms = payloadTerms(flat, damage.percent, damage.totalPercent);
-  const payloadIndex = indexTotal(terms);
-  const mainAttackIndex = mainAttackTerms(
-    attackRows,
-    damage,
-    conversionRows.filter((c) => c.scope === 'global'),
-  );
+  let payloadIndex = 0;
+  for (const [dmgKey, amount] of Object.entries(flat) as [DamageKey, number][]) {
+    if (amount > 0) payloadIndex += amount * (1 + ((damage.percent[dmgKey] ?? 0) + damage.totalPercent) / 100);
+  }
 
   return {
     ranked,
     totalDamagePercent: Math.round(damage.totalPercent),
     payloadIndex: Math.round(payloadIndex),
-    payloadTerms: terms,
-    ...(mainAttackIndex ? { mainAttackIndex } : {}),
     conversions: conversionRows,
     weaponAttack,
     skillDamage,
@@ -1699,13 +1525,7 @@ function exclusionList(reasons: Set<string>): string[] {
     'attack and retaliation damage, which depend on what is being hit',
     'permanent global conversions are folded into the flat damage figures; skill-scoped conversion is listed on the skill it converts and folded nowhere',
     'flat damage figures are min–max midpoints, and gear flat damage reaches skills only through their % weapon damage — the weapon-attack composition is what it describes',
-    // The old wording named affixes only, and a reader took the base item's own
-    // lines for exact. They are not: a live Cesarin's Conviction shows +15%
-    // Attack Speed where its record contributes 18. The tool does not
-    // reconstruct any instance's roll, so say that about every stat it sums
-    // rather than about affixes alone — and without claiming every stat rolls,
-    // or that a record value is the middle of a band.
-    'base-item and affix stats use the database record values, not reconstructed individual rolls; an item’s actual values can differ, so the totals and every swap projection inherit that difference',
+    'affix values are the record’s base numbers; the engine rolls each within its jitter',
     // The resistance matrix bands maintainable buffs separately; everything
     // else here is a permanent-sources sum, and saying so beats letting a
     // reader assume the buff's damage bonus is already in the ranking.
