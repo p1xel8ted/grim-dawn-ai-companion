@@ -1595,7 +1595,7 @@ function exclusionList(reasons: Set<string>): string[] {
     'attack and retaliation damage, which depend on what is being hit',
     'permanent global conversions are folded into the flat damage figures; skill-scoped conversion is listed on the skill it converts and folded nowhere',
     'flat damage figures are min–max midpoints, and gear flat damage reaches skills only through their % weapon damage — the weapon-attack composition is what it describes',
-    'affix values are the record’s base numbers; the engine rolls each within its jitter',
+    'apart from the resistances on a row marked as rolled from this copy, affix values are the record’s base numbers; the engine rolls each within its jitter',
     // The resistance matrix bands maintainable buffs separately; everything
     // else here is a permanent-sources sum, and saying so beats letting a
     // reader assume the buff's damage bonus is already in the ranking.

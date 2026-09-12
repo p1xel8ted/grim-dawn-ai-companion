@@ -268,9 +268,16 @@ export const adviseEnvelopeSchema = z.object({
    */
   stashIncluded: z.boolean().optional(),
   /**
-   * How the resistance figures in this run were arrived at: `rolled` when the
-   * worn items' own resistances were replayed from their seeds, `nominal` when
-   * they were the database's values.
+   * Which way this run's resistances were **computed**, not what that happened
+   * to yield. `rolled` means the seed replay was in use, falling back to the
+   * database's values per item where an item could not be replayed.
+   *
+   * Every run through the current code is `rolled`, including one where no
+   * worn item could be replayed: the method is still the new one, and the
+   * projected after-state can equip a candidate that does replay. Deriving
+   * this from a count would label such a run an earlier calculation, which is
+   * what it is not. How many items replayed, and which did not, is source
+   * provenance and lives on the aggregate instead.
    *
    * Optional, and **absent means `nominal`**: every run stored before the
    * replay existed was computed that way. Nothing is migrated; the reader

@@ -147,6 +147,23 @@ describe('buildEnvelope', () => {
     expect('question' in buildEnvelope(base)).toBe(false);
   });
 
+  it('marks a run by how it was computed, not by what it found', () => {
+    // A run can replay nothing in its before-state and still be a new-method
+    // run: the projected after-state may equip a candidate that does replay.
+    // Deriving the marker from a count would file this one as an earlier
+    // calculation, and the reader would qualify a column that needs no
+    // qualifying.
+    expect(buildEnvelope({ ...base, resistBasis: 'rolled' }).resistBasis).toBe('rolled');
+  });
+
+  it('leaves the marker off when nobody set one, so old files still read', () => {
+    // Absent means the older calculation. Nothing is migrated, so the field
+    // has to stay optional and unwritten rather than defaulting to a value.
+    const envelope = buildEnvelope(base);
+    expect('resistBasis' in envelope).toBe(false);
+    expect(envelope.resistBasis).toBeUndefined();
+  });
+
   it('keeps an unparseable answer and gives the UI an empty table rather than nothing', () => {
     const envelope = buildEnvelope(base);
     expect(envelope.plan).toBeNull();

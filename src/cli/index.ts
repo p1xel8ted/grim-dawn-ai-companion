@@ -1449,7 +1449,7 @@ program
             worn,
             wornSockets,
             stashIncluded: includeStash,
-            resistBasis: snapshot.aggregate.rolledSources.replayed > 0 ? 'rolled' : 'nominal',
+            resistBasis: 'rolled',
             ...(projection ? { projection } : {}),
           });
           writeFileSync(opts.json, `${JSON.stringify(envelope, null, 2)}\n`);

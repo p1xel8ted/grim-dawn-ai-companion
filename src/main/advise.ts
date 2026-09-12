@@ -275,10 +275,11 @@ export class AdviseRunner {
         worn: wornSlots(scope.doc.itemsById),
         wornSockets: wornSocketables(snapshot.resolved.items, socketableIdFor(scope.doc.socketablesById, shortHash)),
         stashIncluded,
-        // Recorded so a stored run opened months from now says which way its
-        // resistances were computed, instead of being read against whatever the
+        // The method, not the outcome: this run used the replay even if no worn
+        // item happened to replay. Recorded so a run opened months from now
+        // says how it was computed rather than being read against whatever the
         // tool does by then.
-        resistBasis: scope.input.aggregate.rolledSources.replayed > 0 ? 'rolled' : 'nominal',
+        resistBasis: 'rolled',
       });
 
       // Persisted *before* the push, so a renderer that reloads on the same
