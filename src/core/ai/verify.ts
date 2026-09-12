@@ -512,7 +512,7 @@ function checkAvoidableHolds(
     const gaps = t.gaps.map((g) => `${g.label} Resistance ${g.short} short`).join(', ');
     warn(
       'avoidable-hold',
-      `HOLD on ${name} for ${t.slot} waits on a drop, but the gap its swap opens (${gaps}) is closable — ` +
+      `HOLD on ${name} for ${t.slot} waits on a drop, but on estimated values the gap its swap opens (${gaps}) is closable — ` +
         `§7's line names the re-augment (${witnessSummary(t)}). Either EQUIP it with that re-augment (in \`fits\` and ` +
         `RE-AUGMENT verdicts), or KEEP the worn item and say which axis it wins on, and by how much`,
     );
@@ -618,7 +618,7 @@ function checkOverstatedCaps(
       warn(
         'overstated-cap',
         `the tally claims ${row.label} Resistance at ${claimed} — at or over the ${row.capAfter} cap — but applying ` +
-          `the plan's own verdicts computes ${row.after} effective, ${Math.round(shortfall)} short of cap; a listed ` +
+          `the plan's own verdicts computes ${row.after} on estimated values, ${Math.round(shortfall)} short of cap; a listed ` +
           `cost was dropped from the arithmetic — re-add it, then either cover the gap or state the shortfall as a decision`,
       );
     }

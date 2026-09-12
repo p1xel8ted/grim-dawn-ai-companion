@@ -1846,6 +1846,13 @@ h3 {
 
 /* Numbers read across better when the row is short. The table takes what it
    needs and stops; the leftover width is what makes room for a third column. */
+/* Says the table's figures are database values, not the roll on your own gear. */
+.resist-estimate {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
 .resist-table {
   width: 100%;
   border-collapse: collapse;

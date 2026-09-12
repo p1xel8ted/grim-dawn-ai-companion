@@ -107,6 +107,14 @@ export function StatsPanel({
 
       <section className="stats-section">
         <h3>Resistances — {stats.difficulty}</h3>
+        {/* The game rolls each item's stats when it drops and we read the
+            database value, so every figure here (and every projection of one)
+            is an estimate. It matters most exactly where it is least visible:
+            a resistance sitting on its cap. */}
+        <p className="resist-estimate">
+          Estimated — item rolls can make the in-game values higher or lower. Check the character sheet when close to
+          the cap.
+        </p>
         <table className="resist-table">
           <thead>
             <tr>

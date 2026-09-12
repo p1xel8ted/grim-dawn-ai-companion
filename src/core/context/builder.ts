@@ -604,6 +604,10 @@ function gameRules(out: Writer, ctx: RenderContext): void {
 
   out.line('**Resistances.** Each of the ten damage resistances caps at 80%. `+% Maximum X Resistance` raises that cap, to a hard ceiling of 95%. The difficulty penalty is subtracted from the total *before* the cap, and it is **not uniform** — the in-game "−25%/−50% to all resistances" blurb is a simplification. On this character\'s difficulty the penalty **to each resistance** is:');
   out.line();
+  out.line(
+    '**Every resistance figure here is an estimate.** The game rolls the stats on each item within a range when it drops, and this tool reads the database values rather than the roll on your own copy, so the real in-game figure can be higher or lower. Where a resistance is close to its cap, the character sheet is the authority.',
+  );
+  out.line();
   out.line(`> ${aggregate.difficulty}: ${penalty}`);
   out.line();
   out.line(
@@ -958,8 +962,8 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line(
     under.length
-      ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap; ${pastCap}.`
-      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap** at this difficulty. Beyond that, ${pastCap}.`,
+      ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap **on estimated values**; ${pastCap}.`
+      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap on estimated values** at this difficulty. Beyond that, ${pastCap}.`,
   );
   if (physicalUnder) {
     out.line();
@@ -2200,7 +2204,7 @@ function closableText(ctx: RenderContext, target: SlotProjection, witness: Closa
     );
   }
   const iron = witness.iron ? `${witness.iron.toLocaleString('en-US')} iron` : 'no iron';
-  return `${bits.join(' · ')} — ${iron}; closes every gap the swap opens`;
+  return `${bits.join(' · ')} — ${iron}; closes every gap the swap opens on estimated values`;
 }
 
 /**
