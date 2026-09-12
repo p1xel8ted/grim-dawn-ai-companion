@@ -878,17 +878,25 @@ check('and an unbreakable identifier breaks rather than overflowing', hostile.pa
 await page.goto(story('parts--loadout-missing-candidate'), { waitUntil: 'networkidle' });
 const unresolved = page.locator('.face-unresolved');
 check('a swap whose item is gone says so', (await unresolved.count()) === 1, `${await unresolved.count()} cards`);
-check(
-  'it names the item the plan wanted',
-  (await unresolved.first().innerText()).trim().length > 0,
-  (await unresolved.first().innerText()).trim().replace(/\s+/g, ' '),
-);
+{
+  // The name has to be the item's, not just the sentence under it.
+  const named = (await unresolved.first().locator('b').innerText()).trim();
+  check('it names the item the plan wanted', named === 'Voidsteel Gauntlets', named);
+}
 {
   // The outgoing item is on the current side and must not also be drawn as the
   // thing to wear.
   const goneRow = page.locator('.slot-row', { has: page.locator('.face-unresolved') }).first();
   const faces = await goneRow.locator('.slot-proposed .item-face').count();
   check('the item being replaced is not drawn as the proposal', faces === 0, `${faces} proposal faces`);
+}
+
+// A row built without a name carries an empty string, so the card falls back
+// to the id rather than naming nothing.
+await page.goto(story('parts--loadout-missing-candidate-unnamed'), { waitUntil: 'networkidle' });
+{
+  const named = (await page.locator('.face-unresolved b').first().innerText()).trim();
+  check('an unnamed target falls back to its id', named === '#nosuchid', named);
 }
 
 await page.goto(story('parts--materials'), { waitUntil: 'networkidle' });

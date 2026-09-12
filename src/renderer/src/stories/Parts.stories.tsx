@@ -73,6 +73,26 @@ export const LoadoutMissingCandidate: StoryObj = {
   },
 };
 
+export const LoadoutMissingCandidateUnnamed: StoryObj = {
+  name: 'Loadout — the item a swap named is gone, and unnamed',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    const advice = fixtureAdvice(snapshot);
+    // A row built without a name carries an empty string, not undefined, so the
+    // card has to fall back to the id rather than render nothing.
+    const row = advice.verdictRows.find((r) => r.replaces)!;
+    const gone = {
+      ...advice,
+      verdictRows: advice.verdictRows.map((r) => (r === row ? { ...r, nextId: 'nosuchid', nextName: '' } : r)),
+    };
+    return (
+      <Frame>
+        <LoadoutPanel snapshot={snapshot} advice={gone} weaponSet={1} onWeaponSet={() => {}} />
+      </Frame>
+    );
+  },
+};
+
 export const Advice: StoryObj = {
   name: 'Advice summary',
   render: () => {

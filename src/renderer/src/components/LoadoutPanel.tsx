@@ -215,6 +215,11 @@ function SlotRow({
   // through to the branch below, which would draw the item being *replaced*
   // with the plan's fits on it and present that as the thing to wear.
   const unresolved = lookup && lookup.state !== 'found' ? lookup.state : undefined;
+  // What to call the item that could not be found. The plan's name for it where
+  // it has one, and the id otherwise - `targetName` is always a string and is
+  // empty whenever the row was built without one, so `??` would leave the card
+  // naming nothing at all.
+  const targetLabel = advice?.targetName?.trim() || `#${advice?.targetId ?? ''}`;
   // An EQUIP's fits are judged against the candidate, because that is the item
   // that will carry them - a fit naming what the candidate already holds asks
   // for nothing. Every other verdict keeps the item, so `socketFits` has
@@ -344,7 +349,7 @@ function SlotRow({
       <div className="slot-side slot-proposed">
         {unresolved ? (
           <div className="face-empty face-unresolved">
-            {advice?.targetName ?? `#${advice?.targetId ?? ''}`}
+            <b>{targetLabel}</b>
             <span>
               {unresolved === 'ambiguous'
                 ? 'more than one of these — open your stash to pick'
