@@ -92,31 +92,66 @@ export interface ContextOptions {
 }
 
 /**
- * The default budget is a **safety net, not a target**.
+ * The default budget is a **safety net, not a target**, and at 200k it is one
+ * the ordinary document never touches.
  *
  * The document's real size is bounded by the level window in `filters.ts`, not
  * by this number: everything a normally-stocked character can reach comes to
- * roughly 36k tokens, and no budget above that changes the file at all. What
- * the headroom buys is the hoarder case — a transfer stash five times the size
- * of the test character's — where the per-slot cap would otherwise start
- * discarding real candidates to hit a number nobody is paying for. Trimming a
- * candidate is a genuine loss of information, so it should happen only when the
- * prompt would actually be too large to reason over, and the receiving model
- * here has a 1M-token window.
+ * roughly 36k tokens, and the biggest live character on the development machine
+ * is 105k with projections. The headroom is for the hoarder case — a transfer
+ * stash several times that — and it is headroom rather than a knife because the
+ * only thing over the budget can cost now is the projections.
+ *
+ * **200k is a ceiling, not a round number, and raising it would break a run
+ * rather than enlarge one.** It comes from the *smaller* of the two backends:
+ * `gpt-5.6-sol` — and every 5.4/5.5/5.6 model codex offers — has a **272k**
+ * context window (codex's own `models_cache.json`; `gpt-5.3-codex-spark` is
+ * 128k, so that model cannot take a stocked dossier at all). That window is
+ * total, and three things share it:
+ *
+ * - the dossier;
+ * - on the repair call, the *first answer* as well — every provider call is a
+ *   fresh stateless subprocess, so `buildUserTurn` re-sends the whole document
+ *   and the reply it is correcting. The stored envelopes show it plainly: two
+ *   `_Suchka` codex runs report 158,889 and 164,824 input tokens against a
+ *   document half that size;
+ * - the generation — **and reasoning is part of it, inside the window, not
+ *   beside it**. Both APIs report reasoning as a *subset* of `output_tokens`
+ *   (`reasoning_output_tokens` on codex, the thinking count on claude), which
+ *   the stored envelopes bear out at about three quarters: 18,791 of 24,246,
+ *   34,351 of 46,317. So a run that "thinks 30k tokens" has spent 30k of the
+ *   window, and the largest codex generation on record here is 30,890 in total.
+ *   What reasoning does *not* do is survive into the next call: each call is a
+ *   fresh subprocess, so the repair sends the document and the prior answer's
+ *   text, never its thinking.
+ *
+ * So the peak single request is roughly `document + 15k of prior answer + 31k
+ * of generation`, and high effort on a hoarder's dossier would push that last
+ * term further. A 200k document leaves about 25k of slack in 272k; a 250k one
+ * leaves none, and the failure arrives minutes and real money into a run rather
+ * than at the moment somebody typed the number. Claude's window is far larger
+ * and is not the constraint; the smaller backend sets this, and one constant
+ * serves both because no real document is near either limit.
  */
-export const DEFAULT_MAX_TOKENS = 100_000;
+export const DEFAULT_MAX_TOKENS = 200_000;
 
 /**
- * Candidates per slot before any trimming. High enough to be no constraint on
- * an ordinary stash — the level window has already done the filtering — while
- * still bounding the pathological case.
+ * Candidates per slot. High enough to be no constraint on an ordinary stash —
+ * the level window has already done the filtering — while still bounding the
+ * pathological case. The token gate no longer steps this down; only an explicit
+ * `--candidates` narrows it, because a candidate the document does not print is
+ * gear the advice never considers.
  */
 export const DEFAULT_PER_GROUP = 40;
 
 export interface ContextDoc {
   markdown: string;
   tokenEstimate: number;
-  /** What the token gate gave up to fit, in the order it gave it up. */
+  /**
+   * What the token gate gave up to fit. At most one entry — the projections —
+   * because they are the only part of the document the model can reconstruct
+   * from the rest of it.
+   */
   trimmed: string[];
   /** Item id → display name, for callers that need to resolve the advisor's output. */
   itemIds: Map<string, string>;
@@ -163,44 +198,44 @@ export interface ContextDoc {
   projections: Map<string, CandidateProjection>;
 }
 
-/**
- * Candidate caps the token gate steps down through when a document really is
- * too big. Entries at or above the starting cap are skipped, so an explicit
- * `--candidates 5` never widens back out to 12.
- */
-const CAP_LADDER = [12, 8, 5, 3];
-
 export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}): ContextDoc {
   const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
   const startCap = opts.perGroup ?? DEFAULT_PER_GROUP;
-
-  // Progressive tightening, cheapest loss first. The matrix, the skills and the
-  // equipped blocks are never touched — they are the parts a swap is judged on.
-  const tightest = CAP_LADDER[CAP_LADDER.length - 1] ?? 3;
   const projections = opts.projections ?? false;
   const reviewStashForSale = opts.reviewStashForSale ?? false;
-  const ladder: Trim[] = [
-    // A projection is derivable from the rest of the document; a dropped
-    // candidate is not. So the projections go first, before any candidate does.
-    ...(projections ? [{ perGroup: startCap, projections: false, note: 'candidate projections omitted' }] : []),
-    ...CAP_LADDER.filter((cap) => cap < startCap).map((cap) => ({
-      perGroup: cap,
-      note: `candidates capped at ${cap} per slot`,
-    })),
-    { perGroup: tightest, compressRecipes: true, note: 'blueprint section compressed to counts' },
-    { perGroup: tightest, compressRecipes: true, compressCensus: true, note: 'component census compressed to counts' },
-    {
-      perGroup: tightest,
-      compressRecipes: true,
-      compressCensus: true,
-      dropRankTables: true,
-      note: 'rank-by-rank skill tables omitted',
-    },
-  ];
+  /**
+   * The one thing the gate may give up, because it is the one thing the model
+   * can put back: §7's projections are arithmetic over figures the document
+   * still prints. Everything else that was once on this ladder was information
+   * the document alone carried, and giving it up bought a smaller file by
+   * making the answer worse:
+   *
+   * - candidate caps stepped 40 → 12 → 8 → 5 → 3 per slot and, on the level-82
+   *   test character, put **12 of 62 candidates out of the model's sight** —
+   *   and out of `candidateIds`, so the exhaustive-disposition check did not
+   *   even ask about them. A dropped candidate is gear you own that the advice
+   *   silently never considered.
+   * - §8's census became two counts. It is *the* single list of components,
+   *   and `freeComponentIds` went on demanding fills from it, so the socket
+   *   checks named components the document had stopped showing.
+   * - §10's blueprints became fifteen names with no stats and no reagents,
+   *   which is not enough to justify a CRAFT.
+   * - §9's faction stock became counts — 133 augments on this character,
+   *   every re-augment and every `closable:` witness argued from them.
+   * - §4's rank tables are what a candidate's `+N to <skill>` is read against.
+   *
+   * So the ladder is one rung, and a document that is still over budget is
+   * reported as over budget rather than cut down to size. The receiving model
+   * has a 1M-token window; the budget exists to say what a document costs, not
+   * to decide what the advisor is allowed to know.
+   */
+  const ladder: Trim[] = projections
+    ? [{ perGroup: startCap, projections: false, note: 'candidate projections omitted' }]
+    : [];
 
   const trimmed: string[] = [];
-  // Projections are computed once and shared across the trim rungs — a rung
-  // only ever shrinks the candidate set, so nothing new is ever needed.
+  // Projections are computed once and shared with the rung that drops them, so
+  // a re-render never recomputes one.
   const projectionCache = new Map<ResolvedItem, CandidateProjection>();
   let doc = render(
     input,
@@ -243,10 +278,6 @@ interface Trim {
   perGroup: number;
   /** Print the projected swap under each candidate. */
   projections?: boolean;
-  compressRecipes?: boolean;
-  compressCensus?: boolean;
-  /** Last resort: §4's rank-by-rank skill tables go, with a line saying so. */
-  dropRankTables?: boolean;
   /** What this step gives up, for the caller to report. */
   note: string;
 }
@@ -389,7 +420,9 @@ function render(
   }
 
   // The free half of the census, by dossier id — what the empty-socket check
-  // measures a plan against. Availability, so trimming never changes it.
+  // measures a plan against. Availability, and nothing the gate does changes
+  // it: §8 and §9 are printed in full at every budget, so what the check can
+  // name is exactly what the model was shown.
   const freeComponentIds = new Set<string>();
   for (const e of components.values()) {
     if (e.loose.size > 0 || (e.craft && e.craft.plan.missing.length === 0)) {
@@ -1023,12 +1056,7 @@ function buildProfile(out: Writer, ctx: RenderContext, trim: Trim): void {
 
   devotionSection(out, ctx);
   damageSection(out, ctx);
-  if (trim.dropRankTables) {
-    out.line();
-    out.line('*(Rank-by-rank skill tables omitted to fit the token budget; skill stats above are at the current effective rank only.)*');
-  } else {
-    skillRankTables(out, ctx);
-  }
+  skillRankTables(out, ctx);
 }
 
 function skillStatLine(skill: DbSkill, rank: number, ctx: RenderContext): string {
@@ -2357,11 +2385,7 @@ function census(
       'Scarcity is the point — a component whose only copy is installed can still be moved, but only by destroying its host, while a craftable one is unlimited if the materials hold out.',
   );
 
-  if (trim.compressCensus) {
-    out.line();
-    out.line(`- ${components.size} distinct component(s) reachable, ${[...components.values()].filter(onlyInstalled).length} of them only as an installed copy, ${craftableNow.length} craftable now`);
-    out.line(`- ${augments.size} distinct loose augment(s) on hand`);
-  } else {
+  {
     out.line();
     out.line(`**Components** (${components.size} reachable, ${craftableNow.length} of them craftable right now):`);
     for (const e of [...components.values()].sort((a, b) => a.item.name.localeCompare(b.item.name))) {
@@ -2922,14 +2946,8 @@ function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelecti
     );
   };
 
-  if (trim.compressRecipes) {
-    out.line();
-    out.bullets(craftableNow.slice(0, 15).map((r) => `**${r.resultName ?? r.name}** — craftable now (${planFor(r).ironTotal.toLocaleString('en-US')} iron)`));
-    if (craftableNow.length > 15) out.line(`- … and ${craftableNow.length - 15} more craftable now`);
-  } else {
-    out.line();
-    for (const recipe of relics) out.line(line(recipe));
-  }
+  out.line();
+  for (const recipe of relics) out.line(line(recipe));
 
   // Blueprints on sale that the character has not learned yet.
   const purchasable: string[] = [];

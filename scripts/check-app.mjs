@@ -215,6 +215,16 @@ const answerText = await page.locator('.advice-answer').innerText();
 const selectable = await page.locator('.advice-answer').evaluate((element) => getComputedStyle(element).userSelect);
 check('the full answer can be selected as text', selectable === 'text', selectable);
 await page.locator('.copy-answer').click();
+// The confirmation is the perishable half of this: the label says `Copied` for
+// 1.8 s and then goes back to itself. So wait for it *before* reading the
+// clipboard — that read is a round trip to the main process, and sampling the
+// label after it raced the timeout and reported a working button as broken.
+const confirmed = await page
+  .locator('.copy-answer')
+  .filter({ hasText: 'Copied' })
+  .waitFor({ state: 'visible', timeout: 1_500 })
+  .then(() => true, () => false);
+check('with visible confirmation', confirmed);
 const copiedText = await app.evaluate(({ clipboard }) => clipboard.readText());
 const firstAnswerLine = answerText.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
 check(
@@ -222,7 +232,6 @@ check(
   copiedText.length > 0 && firstAnswerLine.length > 0 && copiedText.includes(firstAnswerLine),
   `${copiedText.length} character(s)`,
 );
-check('with visible confirmation', (await page.locator('.copy-answer').innerText()).trim() === 'Copied');
 await page.locator('.advice-tabs .tab', { hasText: 'Plan' }).click();
 // And the loadout it was written against, which is what lets a stored run say
 // whether it is still about the save in front of the reader.
@@ -348,6 +357,16 @@ await page.locator('.view-tabs .tab', { hasText: 'Raw' }).click();
 await page.locator('.context-document').waitFor({ state: 'visible', timeout: 30_000 });
 const contextText = await page.locator('.context-document').innerText();
 check('and is the real document', contextText.length > 20_000, `${contextText.length} chars`);
+// The projections are the expensive half of §7 and the half a run is measurably
+// better for having (Stage 12: −34% thinking, −27% wall). Nothing in the window
+// asks for them by name — `adviceScope` defaults them on and every main-process
+// caller goes through it — so the only way to know the window still sends them
+// is to look at the document the window itself built.
+check(
+  'and it carries the §7 projections the run is measured with',
+  contextText.includes('projected in '),
+  contextText.includes('projected in ') ? 'present' : 'MISSING — adviceScope was called without them',
+);
 const contextSubtitle = await page.locator('.modal-subtitle').innerText();
 check('titled with the character and difficulty it was built for', contextSubtitle.includes(character), contextSubtitle);
 await page.locator('.modal .chrome-button', { hasText: 'Close' }).click();
