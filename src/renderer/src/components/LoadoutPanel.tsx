@@ -31,6 +31,7 @@ import {
   actionableFits,
   resolveCandidate,
   socketFits,
+  socketsOf,
   socketMove,
   type SlotAdvice,
   type SocketFit,
@@ -230,7 +231,10 @@ function SlotRow({
           ...(candidate.tooltip.component ? { component: candidate.tooltip.component } : {}),
           ...(candidate.tooltip.augment ? { augment: candidate.tooltip.augment } : {}),
         })
-      : socketFits(advice);
+      : // Every other verdict keeps the item, so its fits are judged against what
+        // that item carries now as well as what the run recorded. A socket the
+        // reader has emptied since is asked for again.
+        socketFits(advice, current ? socketsOf(current) : undefined);
   const proposed = candidate ? withFits(candidate, fits, socketables, names) : undefined;
 
   // A socket move keeps the item, so the proposal is that same item with the
@@ -368,7 +372,9 @@ function SlotRow({
             item={afterSocket}
             // Which chip to mark as the one that changed. A fits-only proposal
             // has no socket verdict to ask, so the first fit answers instead.
-            changed={socket?.kind ?? fits[0]?.kind ?? 'component'}
+            // Nothing left to do, so nothing to point at: a finished slot goes
+            // quiet the way its verdict tag already does.
+            changed={done ? undefined : (socket?.kind ?? fits[0]?.kind ?? 'component')}
             // Two reasons this card can be lit, and it needs both. Its own id,
             // because a socket move proposes the *same item* and its panel holds
             // that subject — without this the card went dark the moment the

@@ -12,7 +12,7 @@
 import { adviceMarks } from '../../shared/advice-marks.js';
 import type { AdviseEnvelope, AdvisorPlan, VerdictRow } from '../../shared/ipc.js';
 import { slotKey, verdictSlotKey } from '../../shared/slots.js';
-import type { UiItem } from '../../shared/view.js';
+import type { UiItem, UiSocketable } from '../../shared/view.js';
 
 export { slotKey } from '../../shared/slots.js';
 
@@ -115,13 +115,21 @@ export interface SocketMove {
  * different items with different stats, and the second is the one the advisor
  * actually argued for.
  */
-export function socketFits(advice: SlotAdvice | undefined): readonly SocketFit[] {
+export function socketFits(advice: SlotAdvice | undefined, live?: SocketBaseline): readonly SocketFit[] {
   const fits = advice?.plan?.fits ?? [];
   // An EQUIP's fits describe the item arriving, and the recorded baseline is
   // the one leaving, so they are not comparable. The caller judges those
   // against the candidate itself, which is what will carry them.
   if (advice?.verdict === 'EQUIP') return fits;
-  return actionableFits(advice?.verdict ?? '', fits, advice?.baseline);
+  return actionableFits(advice?.verdict ?? '', fits, advice?.baseline, live);
+}
+
+/** What a worn item is carrying, in the shape a fit is judged against. */
+export function socketsOf(item: { tooltip: { component?: UiSocketable; augment?: UiSocketable } }): SocketBaseline {
+  return {
+    ...(item.tooltip.component ? { component: item.tooltip.component } : {}),
+    ...(item.tooltip.augment ? { augment: item.tooltip.augment } : {}),
+  };
 }
 
 /**
@@ -210,22 +218,34 @@ function augmentComesOff(verdict: string, fits: readonly SocketFit[], baseline: 
  * A model may write `fits` as the slot's finished socket state rather than as
  * the changes to make, and then most of the list names what is already in
  * place. Rendering those as instructions marks gear as needing work it does not
- * need. Judged against `baseline` - the sockets the run itself recorded, not
- * today's - so acting on the plan cannot turn a dropped fit back into an
- * instruction, and a slot the reader has since re-socketed still reads against
- * what the plan was written about.
+ * need. So a fit says nothing only when it is redundant twice over: the run
+ * recorded that socketable in the socket, **and** the socket still holds it.
  *
- * Without a baseline nothing is dropped: a run stored before the socket record
+ * Both halves are load-bearing. Dropping on the baseline alone hid the one
+ * instruction a reader most needs, the moment they took the socketable out to
+ * fit something else - the finished state the plan described was no longer met
+ * and nothing said so. Dropping on the live socket alone would retire a real
+ * requirement as soon as it was carried out, and then the slot could never be
+ * called done.
+ *
+ * `live` absent means nobody has said what the socket holds, which is not the
+ * same as saying it holds nothing: the baseline answers alone. Without a
+ * baseline nothing is dropped at all, so a run stored before the socket record
  * existed keeps every fit rather than having them guessed away.
  */
 export function actionableFits(
   verdict: string,
   fits: readonly SocketFit[],
   baseline: SocketBaseline | undefined,
+  live?: SocketBaseline,
 ): readonly SocketFit[] {
   if (fits.length === 0 || !baseline) return fits;
   const off = augmentComesOff(verdict, fits, baseline);
-  return fits.filter((fit) => (fit.kind === 'augment' && off ? true : !sameSocketable(baseline[fit.kind], fit)));
+  return fits.filter((fit) => {
+    if (fit.kind === 'augment' && off) return true;
+    if (!sameSocketable(baseline[fit.kind], fit)) return true;
+    return live !== undefined && !sameSocketable(live[fit.kind], fit);
+  });
 }
 
 export type SocketFit = NonNullable<PlanVerdict['fits']>[number];
@@ -431,6 +451,17 @@ export function loadoutDrift(
   // Recorded sockets by the key the verdicts join on, so a slot alias in the
   // plan still finds what the run said that slot was carrying.
   const beforeByKey = new Map(Object.entries(socketsBefore).map(([slot, rec]) => [slotKey(slot), rec]));
+  // What each slot carries now, by the same key. A slot the live loadout does
+  // not mention has said nothing; a slot with an empty socket has.
+  const liveByKey = new Map(Object.entries(worn).map(([slot, w]) => [slotKey(slot), w]));
+  const driftLive = (k: string): SocketBaseline | undefined => {
+    const now = liveByKey.get(k);
+    if (!now) return undefined;
+    return {
+      ...(now.componentId ? { component: { id: now.componentId } } : {}),
+      ...(now.augmentId ? { augment: { id: now.augmentId } } : {}),
+    };
+  };
   const driftBaseline = (k: string): SocketBaseline => {
     const rec = beforeByKey.get(k) ?? {};
     return {
@@ -472,7 +503,7 @@ export function loadoutDrift(
     const asked =
       v.verdict === 'EQUIP'
         ? (v.fits ?? [])
-        : actionableFits(v.verdict, v.fits ?? [], driftBaseline(vKey));
+        : actionableFits(v.verdict, v.fits ?? [], driftBaseline(vKey), driftLive(vKey));
     for (const fit of asked) entry.sockets.push({ kind: fit.kind, id: fit.id });
     if (entry.itemId === undefined && entry.sockets.length === 0) planFor.delete(vKey);
   }
