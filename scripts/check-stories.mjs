@@ -1130,6 +1130,17 @@ const stamps = await page
     })),
   );
 check('each affected slot is stamped', stamps.length === 3, JSON.stringify(stamps));
+
+{
+  // A finished slot has nothing left to point at, so its proposal marks no
+  // socketable - the same going-quiet the struck-through verdict tag does.
+  const doneRow = page.locator('.slot-row', { has: page.locator('.slot-state', { hasText: 'DONE' }) }).first();
+  const marked = await doneRow.locator('.slot-proposed .socket-chip.changed').count();
+  check('a slot that is done marks no changed socketable', marked === 0, `${marked} marked on the DONE row`);
+  // And the row is still a comparison: the finished item is still drawn.
+  const faces = await doneRow.locator('.slot-proposed .item-face').count();
+  check('and still shows what the slot ends up holding', faces === 1, `${faces} proposal faces`);
+}
 check(
   'DONE, PARTIAL and CHANGED are told apart',
   stamps.map((x) => x.text).sort().join(',') === 'CHANGED,DONE,PARTIAL',
