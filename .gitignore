@@ -7,6 +7,7 @@ out/
 # Game-derived data — NEVER commit (Crate's copyrighted content; ship code, not data)
 cache/
 test/fixtures/
+last_run/
 *.gdc
 *.gst
 *.gsh
