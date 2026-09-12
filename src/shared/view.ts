@@ -192,6 +192,15 @@ export interface UiStats {
   defensiveAbility: { flat: number; percent: number };
   unspent: { attribute: number; skill: number; devotion: number };
   resistances: UiResistRow[];
+  /**
+   * How the resistance figures were arrived at: how many worn items had their
+   * own base and affix resistances replayed from the item's seed, and which
+   * ones fell back to database values.
+   *
+   * Not a claim about the total. Components, augments, completion bonuses, set
+   * bonuses and skills are database values either way.
+   */
+  rolledSources: { replayed: number; total: number; fallbacks: { slot: string; name: string; reason: string }[] };
   secondaryResistances: { label: string; value: number }[];
   armor: UiArmorSlot[];
   armorAverage: number;

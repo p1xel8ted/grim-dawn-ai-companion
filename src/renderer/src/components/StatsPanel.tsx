@@ -25,6 +25,17 @@ import { projectedResistances } from '../advice.js';
 import { statClass } from '../statColors.js';
 
 const round = (n: number): string => String(Math.round(n));
+
+/** One line saying where the resistance figures came from. */
+function resistBasis(sources: UiStats['rolledSources']): string {
+  const fitted = 'Components, augments and set bonuses are database values.';
+  if (!sources || sources.total === 0) {
+    return `Database values — item rolls can make the in-game figures higher or lower. Check the character sheet when close to the cap.`;
+  }
+  const head = `${sources.replayed} of ${sources.total} worn items read at their own rolls.`;
+  if (sources.fallbacks.length === 0) return `${head} ${fitted}`;
+  return `${head} ${sources.fallbacks.map((f) => f.name).join(' and ')} at database values. ${fitted}`;
+}
 const signed = (n: number): string => (n < 0 ? round(n) : `+${round(n)}`);
 
 export function StatsPanel({
@@ -107,14 +118,22 @@ export function StatsPanel({
 
       <section className="stats-section">
         <h3>Resistances — {stats.difficulty}</h3>
-        {/* The game rolls each item's stats when it drops and we read the
-            database value, so every figure here (and every projection of one)
-            is an estimate. It matters most exactly where it is least visible:
-            a resistance sitting on its cap. */}
-        <p className="resist-estimate">
-          Estimated — item rolls can make the in-game values higher or lower. Check the character sheet when close to
-          the cap.
-        </p>
+        {/* The game rolls each item's stats when it drops. Worn items whose
+            roll we can reconstruct from the save read as the game shows them;
+            the rest are database values, and so is anything socketed or
+            granted on every item. Says which, rather than calling the whole
+            table an estimate or claiming it is exact. */}
+        <p className="resist-estimate">{resistBasis(stats.rolledSources)}</p>
+        {/* An answer written before the replay existed, or on a save whose
+            items would not replay, projected from database values. Shown
+            beside a sheet that did replay, the two columns are not the same
+            kind of number and the delta between them is not a clean one. */}
+        {hasProjection && advice?.resistBasis !== 'rolled' && stats.rolledSources?.replayed > 0 && (
+          <p className="resist-estimate">
+            The after column is from an earlier calculation on database values, so its difference from the current
+            figures is not a like-for-like comparison.
+          </p>
+        )}
         <table className="resist-table">
           <thead>
             <tr>

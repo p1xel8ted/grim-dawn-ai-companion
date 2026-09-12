@@ -21,6 +21,7 @@
 
 import type { DbItem, DbSkill, GameDb, StatValue } from '@grimdawn/core/db/types';
 import { resolveItem, type ResolvedItem } from '@grimdawn/core/resolve';
+import { REPLAYED_RESISTANCES } from '@grimdawn/core/db/rolls';
 import { EQUIP_SLOT_NAMES, type CharacterSave, type Difficulty } from '@grimdawn/core/save/types';
 import {
   addAttributes,
@@ -94,7 +95,15 @@ export type SourceKind =
   | 'skill'
   | 'devotion'
   /** A skill an equipped part grants outright, and that is always on. */
-  | 'granted';
+  | 'granted'
+  /**
+   * One item's base, prefix and suffix resistances, replayed from its seed.
+   *
+   * A row of its own because the engine sums those three sources into a single
+   * draw and does not keep the split, so there is no honest way to put the
+   * figure back on the row it came from.
+   */
+  | 'rolled';
 
 export interface MatrixRow {
   /** Equipment slot, or the group name for a set / skill / devotion row. */
@@ -391,6 +400,24 @@ export interface SpeedSummary {
   totalSpeedPercent: { permanent: number; maintainable: number };
 }
 
+/**
+ * Which worn items had their own resistances replayed from their seed, and
+ * which fell back to the record's values.
+ *
+ * A count of replayed items is not a claim that the character's resistances are
+ * exact. The replay covers each item's base, prefix and suffix and nothing
+ * else: components, augments, completion bonuses, set bonuses and skills are
+ * all still the record's own numbers, and some of those roll too.
+ */
+export interface RolledSources {
+  /** Worn items whose base and affix resistances came from the seed. */
+  replayed: number;
+  /** Worn items considered, replayed and fallen back together. */
+  total: number;
+  /** The ones that fell back, so a reader can see what is not reconstructed. */
+  fallbacks: { slot: string; name: string; reason: string }[];
+}
+
 export interface CharacterAggregate {
   name: string;
   level: number;
@@ -399,6 +426,8 @@ export interface CharacterAggregate {
   weaponSet: 1 | 2;
   wielding: WieldingSummary;
   resistances: ResistanceMatrix;
+  /** How each worn item's own resistances were arrived at. */
+  rolledSources: RolledSources;
   damage: DamageProfile;
   defense: DefenseSummary;
   /**
@@ -513,14 +542,19 @@ export interface EquippedSlot {
  */
 export function equippedSlots(save: CharacterSave, db: GameDb): EquippedSlot[] {
   const out: EquippedSlot[] = [];
+  // `rolls` here and in the session's own resolveCharacter: this path resolves
+  // the worn items independently of that one, and a projection re-runs through
+  // here on a mutated save, so asking in both is what keeps a candidate and the
+  // item it would replace measured the same way.
+  const ROLLED = { rolls: true } as const;
   save.equipment.forEach((item, i) => {
     const slot = EQUIP_SLOT_NAMES[i] ?? `Slot ${i}`;
-    if (item) out.push({ slot, item: resolveItem(item, db, 'equipped', slot) });
+    if (item) out.push({ slot, item: resolveItem(item, db, 'equipped', slot, undefined, undefined, ROLLED) });
   });
   const held = save.alternateWeaponSetActive ? save.weaponSet2 : save.weaponSet1;
   held.forEach((weapon, i) => {
     const slot = i === 0 ? 'Main hand' : 'Off hand';
-    if (weapon) out.push({ slot, item: resolveItem(weapon, db, 'equipped', slot) });
+    if (weapon) out.push({ slot, item: resolveItem(weapon, db, 'equipped', slot, undefined, undefined, ROLLED) });
   });
   return out;
 }
@@ -611,20 +645,36 @@ function contributions(slots: EquippedSlot[], db: GameDb): Contribution[] {
 
   const armorSlots = new Set(ARMOR_PARTS.map((p) => p.slot));
   for (const { slot, item } of slots) {
+    // When this copy's resistances were replayed from its seed, they come off
+    // the base, prefix and suffix rows and go on one row of their own below.
+    // Every supported key comes off whether or not the replay reports it back:
+    // an omitted key is a combined total of zero, and two sources of opposite
+    // sign really can cancel, so leaving the nominal numbers in place for a key
+    // the replay does not mention would put back exactly the ones it zeroed.
+    const rolled = item.rolled?.provenance === 'seed-replayed' ? item.rolled.values : undefined;
+    const own = (stats?: Record<string, StatValue>): Record<string, StatValue> | undefined => {
+      if (!rolled || !stats) return stats;
+      // Copied, never edited in place: these maps belong to the cached database
+      // and are shared by every item that resolves to the same record.
+      const kept = { ...stats };
+      for (const key of REPLAYED_RESISTANCES) delete kept[key];
+      return kept;
+    };
     push(
       slot,
       'base',
       item.base?.name ?? item.record,
-      item.base?.stats,
+      own(item.base?.stats),
       undefined,
       armorSlots.has(slot) ? slot : undefined,
     );
     // Affix numbers are the record's base values; the engine rolls each within
     // ±jitter percent, so they anchor rather than pin down what this item has.
+    // Still true of everything left on these rows once the resistances are off.
     const jitter = (label: string, pct?: number): string =>
       pct ? `${label}, ±${pct}% roll` : label;
-    push(slot, 'prefix', item.prefixName ?? 'prefix', item.prefix?.stats, jitter('prefix', item.prefix?.jitter));
-    push(slot, 'suffix', item.suffixName ?? 'suffix', item.suffix?.stats, jitter('suffix', item.suffix?.jitter));
+    push(slot, 'prefix', item.prefixName ?? 'prefix', own(item.prefix?.stats), jitter('prefix', item.prefix?.jitter));
+    push(slot, 'suffix', item.suffixName ?? 'suffix', own(item.suffix?.stats), jitter('suffix', item.suffix?.jitter));
     push(
       slot,
       'modifier',
@@ -641,6 +691,9 @@ function contributions(slots: EquippedSlot[], db: GameDb): Contribution[] {
       jitter('relic completion', item.completion?.jitter),
     );
     push(slot, 'augment', item.augment?.name ?? '', item.augment?.stats);
+    // Last, so it reads under the sources it stands in for. Carries resistances
+    // and nothing else, so it adds nothing to armour, damage or attributes.
+    if (rolled) push(slot, 'rolled', 'rolled from this copy', rolled);
   }
 
   for (const hand of ['Main hand', 'Off hand']) {
@@ -971,12 +1024,29 @@ export function aggregateCharacter(
     check: checkRequirements(item, standing),
   }));
 
+  // Only items that were actually asked about count here: an item resolved
+  // without `rolls` carries no verdict either way and must not be reported as
+  // a fallback.
+  const asked = slots.filter(({ item }) => item.rolled !== undefined);
+  const rolledSources: RolledSources = {
+    replayed: asked.filter(({ item }) => item.rolled?.provenance === 'seed-replayed').length,
+    total: asked.length,
+    fallbacks: asked
+      .filter(({ item }) => item.rolled?.provenance !== 'seed-replayed')
+      .map(({ slot, item }) => ({
+        slot,
+        name: item.base?.name ?? item.record,
+        reason: item.rolled?.reason ?? 'no reason given',
+      })),
+  };
+
   return {
     name: save.name,
     level: save.level,
     difficulty,
     weaponSet: save.alternateWeaponSetActive ? 2 : 1,
     wielding,
+    rolledSources,
     resistances: {
       // Grouped by band so the two totals underneath can be read off the rows
       // above them; within a band the discovery order is the loadout order.

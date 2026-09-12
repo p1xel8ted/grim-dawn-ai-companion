@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DbAffix, DbItem, DbSet, DbSkill, GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
+import { rollDescriptor } from '@grimdawn/core/db/roll-descriptor';
 import {
   addDamage,
   addDefense,
@@ -1687,3 +1688,101 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+
+describe('resistances replayed from the item seed', () => {
+  const PLATE = 'records/items/geartorso/replayplate.dbr';
+  const PREFIX = 'records/items/lootaffixes/prefix/replaypfx.dbr';
+  const COMPONENT = 'records/items/materia/replaycomp.dbr';
+
+  const baseFields = { defensiveFire: 20, defensiveAether: 100, defensiveProtection: 500 };
+  const prefixFields = { defensiveFire: 12, lootRandomizerJitter: 20 };
+
+  const db = stubDb({
+    items: {
+      [PLATE]: item(PLATE, {
+        name: 'Testplate',
+        slot: 'ArmorProtective_Chest',
+        stats: baseFields,
+        rolls: rollDescriptor(baseFields),
+      }),
+      [COMPONENT]: item(COMPONENT, { name: 'Testrune', slot: 'ItemRelic', stats: { defensiveFire: 15 } }),
+    },
+    affixes: {
+      [PREFIX]: {
+        record: PREFIX,
+        name: 'Testing',
+        stats: { defensiveFire: 12 },
+        jitter: 20,
+        rolls: rollDescriptor(prefixFields),
+      },
+    },
+  });
+
+  const wear = (seed: number, withComponent = false) => {
+    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    equipment[2] = instance({
+      baseName: PLATE,
+      prefixName: PREFIX,
+      seed,
+      ...(withComponent ? { relicName: COMPONENT } : {}),
+    });
+    return aggregateCharacter(save({ equipment }), db);
+  };
+
+  const rowsFor = (agg: ReturnType<typeof aggregateCharacter>, kind: string) =>
+    agg.resistances.rows.filter((r) => r.kind === kind);
+
+  it('moves the item\'s own resistances onto one rolled row', () => {
+    const agg = wear(12345);
+    expect(rowsFor(agg, 'rolled')).toHaveLength(1);
+    // The base and prefix rows keep everything that is not a replayed
+    // resistance and lose everything that is, whether or not the replay
+    // reported that key back: an omitted key is a combined zero.
+    expect(rowsFor(agg, 'base').some((r) => r.values.fire)).toBe(false);
+    expect(rowsFor(agg, 'prefix').some((r) => r.values.fire)).toBe(false);
+    expect(agg.defense.armorSlots.find((s) => s.slot === 'Chest')?.piece).toBeGreaterThan(0);
+  });
+
+  it('totals to the rolled figure, not the record\'s', () => {
+    const agg = wear(12345);
+    const rolled = rowsFor(agg, 'rolled')[0]!;
+    expect(agg.resistances.permanent.fire).toBe(rolled.values.fire);
+    expect(agg.resistances.permanent.aether).toBe(rolled.values.aether);
+    // The record's own numbers are 20 + 12 Fire and 100 Aether. The rolled
+    // figures are near those and, for at least one of them, not equal.
+    expect(rolled.values.fire === 32 && rolled.values.aether === 100).toBe(false);
+  });
+
+  it('adds a fitted component on top, at its record value', () => {
+    const plain = wear(12345);
+    const fitted = wear(12345, true);
+    // The replay covers base and affixes only, so the component's 15 Fire is
+    // still the database's number and is added rather than replaced.
+    expect(fitted.resistances.permanent.fire).toBe((plain.resistances.permanent.fire ?? 0) + 15);
+  });
+
+  it('gives two copies of the same item different totals', () => {
+    // Same record, same affix, different seed: 30 Fire against 35.
+    expect(wear(12345).resistances.permanent.fire).toBe(30);
+    expect(wear(424242).resistances.permanent.fire).toBe(35);
+  });
+
+  it('reports which worn items were replayed and which fell back', () => {
+    const agg = wear(12345);
+    expect(agg.rolledSources).toEqual({ replayed: 1, total: 1, fallbacks: [] });
+  });
+
+  it('names a fallback item and its reason rather than counting it as replayed', () => {
+    // Seed 0 is the generator's fixed point, which the replay refuses.
+    const agg = wear(0);
+    expect(agg.rolledSources.replayed).toBe(0);
+    expect(agg.rolledSources.fallbacks).toEqual([
+      { slot: 'Chest', name: 'Testplate', reason: 'seed 0 is a fixed point of the generator' },
+    ]);
+    // And the figures fall back to the record's own, unchanged.
+    expect(agg.resistances.permanent.fire).toBe(32);
+    expect(rowsFor(agg, 'rolled')).toHaveLength(0);
+  });
+});

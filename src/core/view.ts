@@ -494,6 +494,7 @@ function buildStats(snap: CharacterSnapshot, db: GameDb): UiStats {
       effective: r.effective[c.key] ?? 0,
       cap: r.caps[c.key] ?? 0,
     })),
+    rolledSources: agg.rolledSources,
     secondaryResistances: r.secondary,
     armor: d.armorSlots.map((s) => ({
       slot: s.slot,

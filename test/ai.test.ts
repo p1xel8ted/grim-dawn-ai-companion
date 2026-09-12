@@ -1466,7 +1466,7 @@ describe('checkPlan — overstated caps', () => {
     const warnings = checkPlan(acidPlan, w([{ label: 'Acid', after: 72, capAfter: 80 }]));
     expect(warnings.map((x) => x.kind)).toEqual(['overstated-cap']);
     expect(warnings[0]!.message).toContain('Acid Resistance at 100');
-    expect(warnings[0]!.message).toContain('72 on estimated values, 8 short');
+    expect(warnings[0]!.message).toContain('72 on the projected totals, 8 short');
     // Unlike a wording warning, this one is structure: it justifies the call.
     expect(worthRepairing(warnings)).toBe(true);
   });

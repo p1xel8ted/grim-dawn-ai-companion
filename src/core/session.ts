@@ -163,7 +163,10 @@ export function loadSnapshot(
   const difficulty = opts.difficulty ?? settings.difficultyOverride ?? save.difficulty;
 
   const account = accountFiles(settings.saveDir);
-  const resolved = resolveCharacter(save, account, db);
+  // `rolls` so the dossier's item blocks and the window read the same replayed
+  // resistances the aggregate does. Without it the two disagree on the same
+  // item, which is worse than either number on its own.
+  const resolved = resolveCharacter(save, account, db, undefined, { rolls: true });
   const aggregate = aggregateCharacter(save, db, difficulty);
   const input: ContextInput = { save, aggregate, resolved, db, account };
   // No projections here: this runs on every watcher tick and its document

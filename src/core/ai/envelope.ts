@@ -268,6 +268,16 @@ export const adviseEnvelopeSchema = z.object({
    */
   stashIncluded: z.boolean().optional(),
   /**
+   * How the resistance figures in this run were arrived at: `rolled` when the
+   * worn items' own resistances were replayed from their seeds, `nominal` when
+   * they were the database's values.
+   *
+   * Optional, and **absent means `nominal`**: every run stored before the
+   * replay existed was computed that way. Nothing is migrated; the reader
+   * qualifies an old run rather than the file being rewritten.
+   */
+  resistBasis: z.enum(['rolled', 'nominal']).optional(),
+  /**
    * The computed before→after, when the run produced a parseable plan and the
    * projection succeeded. Optional twice over: runs stored before it existed,
    * and runs whose projection degraded to nothing, simply do not carry it.
@@ -325,6 +335,8 @@ export interface BuildEnvelopeArgs {
   wornSockets?: Record<string, { component?: string; augment?: string }>;
   /** Whether the dossier included the stashes. See the schema field. */
   stashIncluded?: boolean;
+  /** How this run's resistance figures were computed. See the schema field. */
+  resistBasis?: 'rolled' | 'nominal';
   /**
    * The computed before→after, from `projectPlan`. Computed by the caller —
    * this module may not import the resolver or the database — and passed
@@ -381,6 +393,7 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
     ...(args.worn ? { worn: args.worn } : {}),
     ...(args.wornSockets ? { wornSockets: args.wornSockets } : {}),
     ...(args.stashIncluded !== undefined ? { stashIncluded: args.stashIncluded } : {}),
+    ...(args.resistBasis ? { resistBasis: args.resistBasis } : {}),
     ...(args.projection ? { projection: args.projection } : {}),
   };
 }

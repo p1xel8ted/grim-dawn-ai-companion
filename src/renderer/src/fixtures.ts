@@ -433,6 +433,13 @@ const stats: UiStats = {
     { key: 'chaos', label: 'Chaos', permanent: 89, withMaintainable: 89, penalty: -25, effective: 64, cap: 80 },
     { key: 'bleeding', label: 'Bleeding', permanent: 63, withMaintainable: 63, penalty: -25, effective: 38, cap: 80 },
   ],
+  // One item on database values, so the note renders its interesting branch
+  // rather than only the all-reconstructed one.
+  rolledSources: {
+    replayed: 12,
+    total: 13,
+    fallbacks: [{ slot: 'Relic', name: 'Tidecaller', reason: 'class ItemRelic draws differently' }],
+  },
   secondaryResistances: [
     { label: 'Slow', value: 70 },
     { label: 'Freeze', value: 52 },

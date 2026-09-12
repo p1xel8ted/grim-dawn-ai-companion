@@ -16,6 +16,7 @@
 
 import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } from '@grimdawn/core/db/types';
 import { REP_TIERS } from '@grimdawn/core/db/types';
+import { REPLAYED_RESISTANCES } from '@grimdawn/core/db/rolls';
 import type { CharacterAggregate, DualWieldEnabler, MatrixRow } from '../mechanics/aggregate.js';
 import type { CharacterStanding, RequirementCheck, RequirementGap } from '../mechanics/requirements.js';
 import { atRank, classify, modifierParent, skillLabel, statRecord, type EffectiveRank } from '../mechanics/skills.js';
@@ -595,6 +596,40 @@ function overcapEndgame(ctx: RenderContext): boolean {
   return ctx.aggregate.difficulty === 'Ultimate' && ctx.save.level >= OVERCAP_ENDGAME_LEVEL;
 }
 
+/**
+ * Where the resistance numbers came from, said plainly.
+ *
+ * Never a claim that a total is exact. The replay covers each item's own base
+ * and affix resistances and nothing else, so a fitted component, an augment, a
+ * relic completion bonus, a set bonus and a skill are all still database
+ * values, and several of those roll too. Naming the items that fell back is
+ * the part a reader can act on.
+ */
+function resistanceProvenance(aggregate: CharacterAggregate): string {
+  const { replayed, total, fallbacks } = aggregate.rolledSources;
+  const rest =
+    ' Everything fitted or granted is still a database value: components, augments, relic completion bonuses, set bonuses and skills, some of which the game rolls as well. Where a resistance sits close to its cap, the character sheet is the authority.';
+  if (total === 0) {
+    return `**Every resistance figure here is a database value**, not the roll on your own copy, so the real in-game figure can be higher or lower.${rest}`;
+  }
+  const head = `**${replayed} of ${total} worn items have their own base and affix resistances reconstructed from the item's seed**, so for those the figure is the roll on your copy rather than the middle of the range.`;
+  if (fallbacks.length === 0) return `${head}${rest}`;
+  const named = fallbacks.map((f) => `${f.name} (${f.slot}: ${f.reason})`).join('; ');
+  return `${head} These fall back to database values: ${named}.${rest}`;
+}
+
+/**
+ * The qualifier a cap claim carries, naming anything still on database values.
+ *
+ * A count of reconstructed items is not on its own a promise that a total is
+ * right, so this says what the number is and what is uncertain inside it.
+ */
+function totalsBasis(aggregate: CharacterAggregate): string {
+  const { fallbacks } = aggregate.rolledSources;
+  if (fallbacks.length === 0) return 'on the calculated totals';
+  return `on the calculated totals, with ${fallbacks.map((f) => f.name).join(' and ')} still at database values`;
+}
+
 function gameRules(out: Writer, ctx: RenderContext): void {
   const { aggregate, db } = ctx;
   const caps = db.speedCaps();
@@ -604,9 +639,7 @@ function gameRules(out: Writer, ctx: RenderContext): void {
 
   out.line('**Resistances.** Each of the ten damage resistances caps at 80%. `+% Maximum X Resistance` raises that cap, to a hard ceiling of 95%. The difficulty penalty is subtracted from the total *before* the cap, and it is **not uniform** — the in-game "−25%/−50% to all resistances" blurb is a simplification. On this character\'s difficulty the penalty **to each resistance** is:');
   out.line();
-  out.line(
-    '**Every resistance figure here is an estimate.** The game rolls the stats on each item within a range when it drops, and this tool reads the database values rather than the roll on your own copy, so the real in-game figure can be higher or lower. Where a resistance is close to its cap, the character sheet is the authority.',
-  );
+  out.line(resistanceProvenance(aggregate));
   out.line();
   out.line(`> ${aggregate.difficulty}: ${penalty}`);
   out.line();
@@ -962,8 +995,8 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line(
     under.length
-      ? `**Estimated under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap **on estimated values**; ${pastCap}.`
-      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap on estimated values** at this difficulty. Beyond that, ${pastCap}.`,
+      ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap ${totalsBasis(ctx.aggregate)}; ${pastCap}.`
+      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap** at this difficulty, ${totalsBasis(ctx.aggregate)}. Beyond that, ${pastCap}.`,
   );
   if (physicalUnder) {
     out.line();
@@ -1700,9 +1733,27 @@ function itemBlock(
         })
       : [];
 
-  emit(out, 'base', statLines(base?.stats));
-  if (item.prefix) emit(out, `prefix "${item.prefixName ?? '?'}"${jitter(item.prefix.jitter)}`, statLines(item.prefix.stats));
-  if (item.suffix) emit(out, `suffix "${item.suffixName ?? '?'}"${jitter(item.suffix.jitter)}`, statLines(item.suffix.stats));
+  // When this copy's resistances were replayed from its seed they are one
+  // figure covering base, prefix and suffix together, so they come off those
+  // three blocks and are printed once below them. Every supported key comes
+  // off, including any the replay does not report back: that means a combined
+  // total of zero, and leaving the record's number in its place would put back
+  // the one the roll cancelled out.
+  const rolled = item.rolled?.provenance === 'seed-replayed' ? item.rolled.values : undefined;
+  const own = (stats?: Record<string, number | string>): Record<string, number | string> | undefined => {
+    if (!rolled || !stats) return stats;
+    // Copied: these maps belong to the cached database and are shared.
+    const kept = { ...stats };
+    for (const key of REPLAYED_RESISTANCES) delete kept[key];
+    return kept;
+  };
+
+  emit(out, 'base', statLines(own(base?.stats)));
+  if (item.prefix) emit(out, `prefix "${item.prefixName ?? '?'}"${jitter(item.prefix.jitter)}`, statLines(own(item.prefix.stats)));
+  if (item.suffix) emit(out, `suffix "${item.suffixName ?? '?'}"${jitter(item.suffix.jitter)}`, statLines(own(item.suffix.stats)));
+  if (rolled) {
+    emit(out, 'resistances rolled from this copy (base and affixes together)', statLines(rolled));
+  }
   if (item.modifier) emit(out, `${item.modifierName ?? 'crafting bonus'}${jitter(item.modifier.jitter)}`, statLines(item.modifier.stats));
   if (item.completion) emit(out, `relic completion bonus${jitter(item.completion.jitter)}`, statLines(item.completion.stats));
 
@@ -1943,7 +1994,7 @@ function candidatesSection(
   if (ctx.projections.size) {
     out.line();
     out.line(
-      `**Projected swaps.** Under each candidate, \`projected in <slot>\` is the tool's own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot, re-aggregated and diffed. Its sockets are **carried over** where they legally can be: the outgoing item's component refitted (a loose or craftable copy, else by salvaging the outgoing item) and its augment re-bought where a reached vendor sells it — the \`sockets:\` clause says which, and what it costs, so the figures are the item's own delta and not the socket package's. A socket the candidate already holds stays as saved, and an empty socket it still has is a further gain not counted; a carried-over component is projected without a rolled completion bonus, a slight understatement. Use it in place of your own subtraction. Where the swap leaves a cappable resistance short, \`closable:\` is one re-assignment of the loadout's armour augment sockets and the incoming component socket that closes every gap the swap opens on estimated values — checked against the computed projection, ids included, a witness under those estimates and not a recommendation of how; \`not closable\` means no closure was found on estimated values by those means alone, and leaves jewellery and weapon augments, other components and joint moves to you. It sees exactly what §3 counts and **nothing on §3's exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today's loadout, so a joint move is yours to sum from §3's rows, and past a cap the sum is not the sum of the parts. \`no tracked figure improves\` means exactly that and is **not a disposition** — ${ctx.reviewStashForSale ? 'every offered item needs `hold` or `sell` when it is not equipped' : 'a carried item still needs `hold` or `sell`, and a stored item is never sold'}. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.`,
+      `**Projected swaps.** Under each candidate, \`projected in <slot>\` is the tool's own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot, re-aggregated and diffed. Its sockets are **carried over** where they legally can be: the outgoing item's component refitted (a loose or craftable copy, else by salvaging the outgoing item) and its augment re-bought where a reached vendor sells it — the \`sockets:\` clause says which, and what it costs, so the figures are the item's own delta and not the socket package's. A socket the candidate already holds stays as saved, and an empty socket it still has is a further gain not counted; a carried-over component is projected without a rolled completion bonus, a slight understatement. Use it in place of your own subtraction. Where the swap leaves a cappable resistance short, \`closable:\` is one re-assignment of the loadout's armour augment sockets and the incoming component socket that closes every gap the swap opens on the calculated totals — checked against the computed projection, ids included, a witness under those totals and not a recommendation of how; \`not closable\` means no closure was found by those means alone, and leaves jewellery and weapon augments, other components and joint moves to you. It sees exactly what §3 counts and **nothing on §3's exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today's loadout, so a joint move is yours to sum from §3's rows, and past a cap the sum is not the sum of the parts. \`no tracked figure improves\` means exactly that and is **not a disposition** — ${ctx.reviewStashForSale ? 'every offered item needs `hold` or `sell` when it is not equipped' : 'a carried item still needs `hold` or `sell`, and a stored item is never sold'}. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.`,
     );
     const levers = resistanceLevers(ctx, components, augments);
     if (levers.length) {
@@ -2159,6 +2210,12 @@ function projectionLines(ctx: RenderContext, candidate: Candidate, target: SlotP
     if (target.closable) parts.push(`closable: ${closableText(ctx, target, target.closable)}`);
     else if (target.notClosable) parts.push(`${target.notClosable} — jewellery and weapon augments, other components and joint moves are yours`);
   }
+  // Said on the line the reader acts on: the outgoing item's resistances may be
+  // this copy's real rolls while the incoming one's are database values, and
+  // then the delta is softer than the rest of the line looks.
+  if (target.candidateFallback) {
+    parts.push(`this candidate's own resistances are database values (${target.candidateFallback})`);
+  }
   if (target.unworn.length) parts.push(`un-wears ${target.unworn.join(', ')}`);
   if (target.postSwap) {
     parts.push(`requirements once ${target.outgoing?.display ?? 'the slot'} leaves: ${requirementText(item, target.postSwap)}`);
@@ -2204,7 +2261,7 @@ function closableText(ctx: RenderContext, target: SlotProjection, witness: Closa
     );
   }
   const iron = witness.iron ? `${witness.iron.toLocaleString('en-US')} iron` : 'no iron';
-  return `${bits.join(' · ')} — ${iron}; closes every gap the swap opens on estimated values`;
+  return `${bits.join(' · ')} — ${iron}; closes every gap the swap opens on the calculated totals`;
 }
 
 /**

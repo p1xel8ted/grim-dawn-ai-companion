@@ -105,6 +105,16 @@ export interface SlotProjection {
   closable?: ClosableWitness;
   /** Set instead of `closable` when the gaps are real and no such assignment exists. */
   notClosable?: string;
+  /**
+   * Why the candidate's own resistances could not be replayed from its seed,
+   * when they could not.
+   *
+   * A loadout where every worn item replays can still take in a candidate that
+   * does not, and then the projected total mixes a reconstructed figure for
+   * what leaves with a database figure for what arrives. Saying so is the only
+   * way a reader can tell which half of the comparison is soft.
+   */
+  candidateFallback?: string;
   /** Meets its requirements at equip time — the post-swap check where that differs, else the as-dressed one. */
   wearable: boolean;
   /** No figure the projection tracks moves up. An annotation, never a disposition. */
@@ -443,6 +453,9 @@ export function candidateProjections(
         departing,
         carried,
         gaps: [],
+        ...(candidate.item.rolled && candidate.item.rolled.provenance !== 'seed-replayed'
+          ? { candidateFallback: candidate.item.rolled.reason ?? 'no reason given' }
+          : {}),
         wearable: candidate.check.meets,
         noTrackedGain: false,
         identical: false,
